@@ -23,15 +23,17 @@ It is a fork of https://github.com/muphy09/3s-PokeMMO-Tool by Brian K. (muphy09)
    - **Android SDK** (via Android Studio) with platform tools installed.
    - **Java/JDK 17** (required by recent Android Gradle Plugin versions).
    - **Gradle/Android Studio** for building and running the `android/` project.
-   - Create the file android/local.properties with the contents sdk.dir=/path/to/android/sdk
-2. Install dependencies:
+   - **Create the file android/local.properties** with the contents sdk.dir=/path/to/android/sdk
+2. Clone the repo:
+   - `git clone https://github.com/elgreams/3and3s-pokemmo-pocket-dex.git`
+3. Install dependencies:
    - `npm ci`
-3. Build + sync Capacitor:
+4. Build + sync Capacitor:
    - `npm run build`
    - `npm run cap:sync`
-4. Assemble the APK:
+5. Assemble the APK:
    - `cd android && ./gradlew assembleDebug`
-5. Retrieve the APK from:
+6. Retrieve the APK from:
    - `android/app/build/outputs/apk/debug/app-debug.apk`
 
 ## ⚠️ Android known gaps
