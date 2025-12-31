@@ -1,0 +1,44 @@
+{
+  "name": "3and3s-pocket-dex",
+  "version": "3.3.8",
+  "private": true,
+  "description": "3&3s Pocket Dex — A PokeMMO Companion Tool.",
+  "author": "3",
+  "scripts": {
+    "dev": "cross-env CHOKIDAR_USEPOLLING=1 CHOKIDAR_INTERVAL=200 vite",
+    "build": "vite build",
+    "clean": "rimraf release",
+    "cap:sync": "npx cap sync android",
+    "android:build": "npm run build && npx cap sync android && (cd android && ./gradlew assembleDebug)",
+    "android:build:release": "npm run build && npx cap sync android && (cd android && ./gradlew assembleRelease)",
+    "push-release": "node -e \"const v=require('./package.json').version; const {execSync}=require('child_process'); execSync('git push origin HEAD',{stdio:'inherit'}); execSync('git push origin v'+v,{stdio:'inherit'});\"",
+    "release:patch": "npm version patch -m \"v%s\" && npm run push-release",
+    "release:minor": "npm version minor -m \"v%s\" && npm run push-release",
+    "release:major": "npm version major -m \"v%s\" && npm run push-release",
+    "telemetry:stats": "node tools/install-telemetry-stats.js"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/filesystem": "^6.0.0",
+    "@capacitor/preferences": "^6.0.0",
+    "@capacitor/share": "^6.0.0",
+    "eslint": "^9.34.0",
+    "marked": "^16.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "undici": "^6.21.3",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/cli": "^6.1.2",
+    "@vitejs/plugin-react": "^4.3.0",
+    "astral-regex": "^2.0.0",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "rimraf": "^5.0.10",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.0",
+    "wait-on": "^7.2.0"
+  }
+}

@@ -1,0 +1,5537 @@
+﻿import React, { useEffect, useMemo, useState, useRef, useContext } from 'react';
+import './index.css';
+import dexRaw from '../UpdatedDex.json';
+import itemsRaw from '../itemdata.json';
+import catchRates from '../data/catch-rates.json';
+import VersionBadge from "./components/VersionBadge.jsx";
+import OptionsMenu from './components/OptionsMenu.jsx';
+import ColorPickerButton from './components/ColorPickerButton.jsx';
+import CaughtListButton from './components/CaughtListButton.jsx';
+import AlphaDexButton from './components/AlphaDexButton.jsx';
+import EventDexButton from './components/EventDexButton.jsx';
+import ShinyDexButton from './components/ShinyDexButton.jsx';
+import ThemeButton from './components/ThemeButton.jsx';
+import SearchFilter from './components/SearchFilter.jsx';
+import HomeScreen from './components/HomeScreen.jsx';
+import { ColorContext, DEFAULT_METHOD_COLORS, DEFAULT_RARITY_COLORS } from './colorConfig.js';
+import { CaughtContext } from './caughtContext.js';
+import { AlphaCaughtContext } from './alphaCaughtContext.js';
+import { ShinyCaughtContext } from './shinyCaughtContext.js';
+import alphaData from '../data/alpha_pokemon.json';
+import alphaIconUrl from '../data/alpha.ico';
+import BreedingSimulator from './components/BreedingSimulator.jsx';
+import TeamBuilder from './components/TeamBuilder.jsx';
+import DaycareManager from './components/DaycareManager.jsx';
+import HordeSearch from './components/HordeSearch.jsx';
+import RecommendedMovesets from './components/RecommendedMovesets.jsx';
+import ResourcesOverlay from './components/ResourcesOverlay.jsx';
+import hordeRegions from '../horderegiondata.json';
+import typeChartImg from '../data/Pokemon_Type_Chart.png';
+import movesData from '../data/moves.json';
+import appBridge from './services/appBridge';
+import { getBoolean, getItem, getJson, setItem, setJson } from './services/storage';
+
+const TM_URL        = `${import.meta.env.BASE_URL}data/tm_locations.json`;
+const APP_TITLE = "3&3s Pocket Dex";
+
+/** Optional overrides in .env / .env.production:
+ *  VITE_SPRITES_BASE=/sprites/pokeapi/
+ *  VITE_SPRITES_EXT=.png
+ */
+const SPRITES_BASE = (import.meta.env.VITE_SPRITES_BASE || `${import.meta.env.BASE_URL}sprites/`).replace(/\/+$/, '/');
+const SPRITES_EXT  = import.meta.env.VITE_SPRITES_EXT || '.png';
+const ITEM_ICON_BASE = 'https://raw.githubusercontent.com/PokeMMO-Tools/pokemmo-data/main/assets/itemicons/';
+const ITEM_PLACEHOLDER = `${import.meta.env.BASE_URL}no-item.svg`;
+const PLACEHOLDER_POKEMON = `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M50 10c-5.5 0-10 4.5-10 10v5h-5c-5.5 0-10 4.5-10 10v30c0 5.5 4.5 10 10 10h5v5c0 5.5 4.5 10 10 10s10-4.5 10-10v-5h5c5.5 0 10-4.5 10-10V35c0-5.5-4.5-10-10-10h-5v-5c0-5.5-4.5-10-10-10z" fill="none" stroke="currentColor" stroke-width="2"/><text x="50" y="55" font-size="40" text-anchor="middle" fill="currentColor">?</text></svg>`)}`;
+
+// Precompute horde sizes by region and area for quick lookup
+const HORDE_SIZE_MAP = (() => {
+  const map = {};
+  for (const region of hordeRegions.horderegiondata || []) {
+    const rKey = region.region.toLowerCase();
+    if (!map[rKey]) map[rKey] = {};
+    for (const area of region.areas || []) {
+      const aKey = area.name.toLowerCase();
+      if (!map[rKey][aKey]) map[rKey][aKey] = {};
+      const defSize = area.defaultHordeSize;
+      for (const p of area.pokemon || []) {
+        const pKey = p.name.toLowerCase();
+        map[rKey][aKey][pKey] = p.hordeSize || defSize;
+      }
+    }
+  }
+  return map;
+})();
+
+// Alpha species membership set by Dex ID (defined after DEX indices)
+
+function normalizeAreaName(area = "") {
+  return String(area)
+    .toLowerCase()
+    .replace(/\s*\([^)]*\)\s*/g, "")
+    .trim();
+}
+
+function stripSeason(str = "") {
+  return String(str)
+    // Remove SEASON# when it appears with a slash before or after
+    .replace(/\/SEASON\d+/gi, "")
+    .replace(/SEASON\d+\//gi, "")
+    // Remove standalone (SEASON#) tags
+    .replace(/\(SEASON\d+\)/gi, "")
+    // Clean up empty parentheses
+    .replace(/\(\s*\)/g, "")
+    // Normalize whitespace
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getHordeSize(region, area, name) {
+  const rKey = region?.toLowerCase();
+  const aKey = area?.toLowerCase();
+  const pKey = name?.toLowerCase();
+  return (
+    HORDE_SIZE_MAP[rKey]?.[aKey]?.[pKey] ??
+    HORDE_SIZE_MAP[rKey]?.[normalizeAreaName(area)]?.[pKey] ??
+    null
+  );
+}
+
+const TRANSPARENT_PNG =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=';
+
+  const ENCOUNTER_TYPES = (() => {
+    const set = new Set();
+    for (const mon of dexRaw) {
+      for (const loc of mon.locations || []) {
+        if (loc.type) set.add(cleanMethodLabel(loc.type));
+        if (loc.rarity && /lure/i.test(loc.rarity)) set.add('Lure');
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  })();
+
+/* ---------- small style helpers ---------- */
+const styles = {
+  segWrap: { display:'inline-flex', border:'1px solid var(--divider)', background:'var(--surface)', borderRadius:999, padding:4, gap:4 },
+  segBtn(active){ return {
+    appearance:'none', border:0, padding:'8px 14px', borderRadius:999, fontWeight:700, cursor:'pointer',
+    transition:'all .15s ease', background: active?'var(--card)':'transparent',
+    color: active?'var(--text)':'var(--muted)', boxShadow: active?'inset 0 0 0 1px var(--divider), 0 4px 18px rgba(0,0,0,.35)':'none'
+  };},
+  card: { padding:16, borderRadius:12, border:'1px solid var(--divider)', background:'var(--surface)' },
+  areaCard: { padding:12, borderRadius:12, border:'1px solid var(--divider)', background:'var(--surface)' },
+  gridCols: { display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(260px, 1fr))', gap:10 },
+  monCard: { position:'relative', display:'flex', flexDirection:'column', alignItems:'center', gap:8, border:'1px solid var(--divider)', borderRadius:10, padding:'10px', background:'var(--surface)', textAlign:'center' },
+  encWrap: {
+    display:'flex',
+    gap:8,
+    marginTop:8,
+    width:'100%',
+    overflowX:'auto',
+    scrollBehavior:'smooth'
+  },
+  encCol: { display:'flex', flexDirection:'column', alignItems:'center', gap:4 },
+  chip: {
+    padding:'4px 8px',
+    borderRadius:6,
+    background:'var(--primary)',
+    color:'var(--onprimary)',
+    fontSize:14,
+    border:'1px solid var(--accent)',
+    boxShadow:'0 0 0 2px var(--accent)',
+    display:'inline-flex',
+    alignItems:'center',
+    gap:6
+  },
+  chipX: {
+    marginLeft:4,
+    display:'inline-flex',
+    alignItems:'center',
+    justifyContent:'center',
+    width:16,
+    height:16,
+    borderRadius:999,
+    border:'1px solid #ffffff55',
+    background:'transparent',
+    color:'var(--onprimary)',
+    fontWeight:900,
+    lineHeight:1,
+    cursor:'pointer',
+    opacity:.9
+  }
+};
+
+/* ---------- utils ---------- */
+function titleCase(s = "") {
+  return String(s)
+    .toLowerCase()
+    .replace(/(^|[\s(-])([a-z])/g, (_, p1, p2) => p1 + p2.toUpperCase());
+}
+function normalizeKey(s=''){
+  return String(s)
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/\u2640/g,'-f')
+    .replace(/\u2642/g,'-m')
+    .replace(/[^\w\s-]/g,'')
+    .replace(/\s+/g,'-')
+    .replace(/-+/g,'-')
+    .trim();
+}
+function normalizeType(t){ return String(t||'').toLowerCase().trim(); }
+function normalizeRegion(r=''){ return String(r||'').toLowerCase().replace(/\s+/g,'').trim(); }
+const keyName = (s = "") => s.trim().toLowerCase().replace(/\s+/g, " ");
+
+function calcCatchChance(rate, hpRatio = 1, statusMult = 1, ballMult = 1) {
+  if (!rate || rate <= 0) return 0;
+  const a = Math.floor((3 - 2 * hpRatio) * rate * ballMult / 3);
+  const aStatus = Math.floor(a * statusMult);
+  const capped = Math.max(1, Math.min(255, aStatus));
+  if (capped >= 255) return 1;
+  const b = 1048560 / Math.sqrt(Math.sqrt(16711680 / capped));
+  return Math.pow(b / 65535, 4);
+}
+
+const STATUS_EFFECT_BUTTONS = [
+  { key: 'slp', label: 'SLP' },
+  { key: 'frz', label: 'FRZ' },
+  { key: 'par', label: 'PAR' },
+  { key: 'brn', label: 'BRN' },
+  { key: 'psn', label: 'PSN' },
+];
+
+const STATUS_MULTIPLIERS = {
+  slp: 2,
+  frz: 2,
+  par: 1.5,
+  brn: 1.5,
+  psn: 1.5,
+};
+
+const createBallIcon = (svg) => `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+
+const BALL_OPTIONS = [
+  {
+    key: 'pokeball',
+    label: 'Poké Ball',
+    multiplier: 1,
+    icon: createBallIcon(`
+      <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>
+        <circle cx='16' cy='16' r='15' fill='#ffffff'/>
+        <path d='M16 1a15 15 0 0 1 15 15H1A15 15 0 0 1 16 1z' fill='#e33b3b'/>
+        <path d='M1 16h30' stroke='#1f1f1f' stroke-width='4' stroke-linecap='round'/>
+        <circle cx='16' cy='16' r='5' fill='#ffffff' stroke='#1f1f1f' stroke-width='2'/>
+        <circle cx='16' cy='16' r='2.5' fill='#d9d9d9'/>
+      </svg>
+    `)
+  },
+  {
+    key: 'great-ball',
+    label: 'Great Ball',
+    multiplier: 1.5,
+    icon: createBallIcon(`
+      <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>
+        <circle cx='16' cy='16' r='15' fill='#ffffff'/>
+        <path d='M16 1a15 15 0 0 1 15 15H1A15 15 0 0 1 16 1z' fill='#2f6edb'/>
+        <path d='M6 10c2.4-3.5 5.6-5.3 10-5.3S23.6 6.5 26 10l-5 4H11z' fill='#d03636'/>
+        <path d='M1 16h30' stroke='#1f1f1f' stroke-width='4' stroke-linecap='round'/>
+        <circle cx='16' cy='16' r='5' fill='#ffffff' stroke='#1f1f1f' stroke-width='2'/>
+        <circle cx='16' cy='16' r='2.5' fill='#d9d9d9'/>
+      </svg>
+    `)
+  },
+  {
+    key: 'ultra-ball',
+    label: 'Ultra Ball',
+    multiplier: 2,
+    icon: createBallIcon(`
+      <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>
+        <circle cx='16' cy='16' r='15' fill='#ffffff'/>
+        <path d='M16 1a15 15 0 0 1 15 15H1A15 15 0 0 1 16 1z' fill='#1f1f1f'/>
+        <path d='M8 6c2.5-1.8 5.1-3 8-3s5.5 1.2 8 3l-2.5 6h-11z' fill='#ffca28'/>
+        <path d='M1 16h30' stroke='#1f1f1f' stroke-width='4' stroke-linecap='round'/>
+        <circle cx='16' cy='16' r='5' fill='#ffffff' stroke='#1f1f1f' stroke-width='2'/>
+        <circle cx='16' cy='16' r='2.5' fill='#d9d9d9'/>
+      </svg>
+    `)
+  },
+  {
+    key: 'quick-ball',
+    label: 'Quick Ball',
+    multiplier: 5,
+    icon: createBallIcon(`
+      <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>
+        <circle cx='16' cy='16' r='15' fill='#ffffff'/>
+        <path d='M16 1a15 15 0 0 1 15 15H1A15 15 0 0 1 16 1z' fill='#1f64b6'/>
+        <path d='M6 9c2.3-3 5.6-4.6 10-4.6S23.7 6 26 9l-4 4 4 4c-2.3 3-5.6 4.6-10 4.6S8.3 20 6 17l4-4z' fill='#ffe14d'/>
+        <path d='M1 16h30' stroke='#1f1f1f' stroke-width='4' stroke-linecap='round'/>
+        <circle cx='16' cy='16' r='5' fill='#ffffff' stroke='#1f1f1f' stroke-width='2'/>
+        <circle cx='16' cy='16' r='2.5' fill='#d9d9d9'/>
+      </svg>
+    `)
+  },
+  {
+    key: 'dusk-ball',
+    label: 'Dusk Ball',
+    multiplier: 2.5,
+    icon: createBallIcon(`
+      <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>
+        <circle cx='16' cy='16' r='15' fill='#ffffff'/>
+        <path d='M16 1a15 15 0 0 1 15 15H1A15 15 0 0 1 16 1z' fill='#0e4b3b'/>
+        <path d='M6 9c2.4-3.5 5.6-5.3 10-5.3S23.6 5.5 26 9l-3 6H9z' fill='#1f7a5c'/>
+        <path d='M1 16h30' stroke='#12332b' stroke-width='4' stroke-linecap='round'/>
+        <circle cx='16' cy='16' r='5' fill='#ffffff' stroke='#12332b' stroke-width='2'/>
+        <circle cx='16' cy='16' r='2.5' fill='#d9d9d9'/>
+      </svg>
+    `)
+  },
+  {
+    key: 'repeat-ball',
+    label: 'Repeat Ball',
+    multiplier: 2.5,
+    icon: createBallIcon(`
+      <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>
+        <circle cx='16' cy='16' r='15' fill='#ffffff'/>
+        <path d='M16 1a15 15 0 0 1 15 15H1A15 15 0 0 1 16 1z' fill='#f48c2a'/>
+        <path d='M6 9c2.5-3.2 5.7-4.8 10-4.8S23.5 5.8 26 9l-5 4 5 4c-2.5 3.2-5.7 4.8-10 4.8S8.5 20.2 6 17l5-4z' fill='#1f1f1f' opacity='0.6'/>
+        <path d='M1 16h30' stroke='#1f1f1f' stroke-width='4' stroke-linecap='round'/>
+        <circle cx='16' cy='16' r='5' fill='#ffffff' stroke='#1f1f1f' stroke-width='2'/>
+        <circle cx='16' cy='16' r='2.5' fill='#d9d9d9'/>
+      </svg>
+    `)
+  },
+  {
+    key: 'safari-ball',
+    label: 'Safari Ball',
+    multiplier: 1.5,
+    icon: createBallIcon(`
+      <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>
+        <circle cx='16' cy='16' r='15' fill='#ffffff'/>
+        <path d='M16 1a15 15 0 0 1 15 15H1A15 15 0 0 1 16 1z' fill='#1d4d3b'/>
+        <path d='M6 9c2.4-3.5 5.6-5.3 10-5.3S23.6 5.5 26 9l-3 6H9z' fill='#9ec85b'/>
+        <path d='M1 16h30' stroke='#1c332a' stroke-width='4' stroke-linecap='round'/>
+        <circle cx='16' cy='16' r='5' fill='#ffffff' stroke='#1c332a' stroke-width='2'/>
+        <circle cx='16' cy='16' r='2.5' fill='#d9d9d9'/>
+      </svg>
+    `)
+  }
+];
+
+function BallSelect({ value, onChange }) {
+  const [open, setOpen] = React.useState(false);
+  const [menuMaxHeight, setMenuMaxHeight] = React.useState(null);
+  const ref = React.useRef(null);
+  const selected = BALL_OPTIONS.find(opt => opt.key === value) || BALL_OPTIONS[0];
+
+  const updateMenuMaxHeight = React.useCallback(() => {
+    if (!ref.current) return;
+    const wrap = ref.current;
+    const container = wrap.closest('.pokemon-profile-card');
+    const button = wrap.querySelector('.profile-ball-select-button');
+    const menu = wrap.querySelector('.profile-ball-select-menu');
+    if (!container || !button || !menu) {
+      setMenuMaxHeight(null);
+      return;
+    }
+    const containerRect = container.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    // Account for the 6px gap defined in CSS plus a little breathing room.
+    const gap = 10;
+    const available = containerRect.bottom - buttonRect.bottom - gap;
+    setMenuMaxHeight(Number.isFinite(available) && available > 0 ? available : null);
+  }, []);
+
+  React.useEffect(() => {
+    function handleClick(e) {
+      if (!ref.current || ref.current.contains(e.target)) return;
+      setOpen(false);
+    }
+    function handleKey(e) {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, []);
+
+  React.useLayoutEffect(() => {
+    if (!open) return;
+    updateMenuMaxHeight();
+    const handleResize = () => updateMenuMaxHeight();
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [open, updateMenuMaxHeight]);
+
+  React.useEffect(() => {
+    if (!open) {
+      setMenuMaxHeight(null);
+    }
+  }, [open]);
+
+  return (
+    <div className={`profile-ball-select${open ? ' is-open' : ''}`} ref={ref}>
+      <button
+        type="button"
+        className="profile-ball-select-button"
+        onClick={() => setOpen(v => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title={`Selected ball: ${selected.label}`}
+      >
+        <img
+          className="profile-ball-icon"
+          src={selected.icon}
+          alt=""
+          aria-hidden="true"
+        />
+        <span className="profile-ball-select-label">Ball</span>
+      </button>
+      {open && (
+        <div
+          className="profile-ball-select-menu"
+          role="listbox"
+          style={menuMaxHeight ? { maxHeight: menuMaxHeight } : undefined}
+        >
+          {BALL_OPTIONS.map(opt => (
+            <button
+              type="button"
+              key={opt.key}
+              className={`profile-ball-select-option${opt.key === selected.key ? ' is-selected' : ''}`}
+              onClick={() => {
+                onChange(opt.key);
+                setOpen(false);
+              }}
+              role="option"
+              aria-selected={opt.key === selected.key}
+            >
+              <img
+                className="profile-ball-icon"
+                src={opt.icon}
+                alt=""
+                aria-hidden="true"
+              />
+              <span>{opt.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- pokedex adapter ---------- */
+// Build lookups to help resolve form data and skip standalone form entries
+const RAW_DEX_BY_ID = new Map(dexRaw.map(m => [m.id, m]));
+const FORM_IDS = new Set();
+for (const mon of dexRaw) {
+  if (!Array.isArray(mon.forms)) continue;
+  for (const f of mon.forms) {
+    if (typeof f.id === 'number' && f.id !== mon.id) {
+      FORM_IDS.add(f.id);
+    }
+  }
+}
+
+function toLegacyShape(m){
+  const types = Array.isArray(m.types) ? [...new Set(m.types.map(normalizeType))] : [];
+  return {
+    id: m.id,
+    name: m.name,
+    slug: m.slug || normalizeKey(m.name),
+    types,
+    expType: m.exp_type,
+    obtainable: m.obtainable,
+    genderRatio: m.gender_ratio,
+    height: m.height,
+    weight: m.weight,
+    eggGroups: m.egg_groups || [],
+    abilities: m.abilities || [],
+    forms: [],
+    evolutions: m.evolutions || [],
+    moves: m.moves || [],
+    stats: m.stats || {},
+    yields: m.yields || {},
+    heldItems: m.held_items || [],
+    locations: m.locations || [],
+    sprite: m.sprite ?? null,
+    sprites: m.sprites ?? null,
+    image: m.image ?? null,
+    icon: m.icon ?? null
+  };
+}
+const DEX_LIST = dexRaw
+  .filter(m => !FORM_IDS.has(m.id))
+  .map(m => {
+    const base = toLegacyShape(m);
+    if (Array.isArray(m.forms)) {
+      base.forms = m.forms
+        // Skip the base form (form_id 0 or identical name) and egg placeholders
+        .filter(f => f.form_id !== 0 && f.name !== m.name && f.name?.toLowerCase() !== 'egg')
+        .map(f => {
+          const formBase = {
+            ...(f.id != null ? RAW_DEX_BY_ID.get(f.id) : {}),
+            ...f,
+          };
+          const raw = formBase.name || '';
+          const bracket = raw.match(/\[(.+)\]/);
+          let label = bracket ? bracket[1] : raw;
+          label = label.replace(new RegExp(`\\b${m.name}\\b`, 'i'), '').trim();
+          if (!label) return null;
+          const name = `${m.name} (${label})`;
+          const shaped = toLegacyShape({ ...formBase, name, forms: [] });
+          shaped.id = null;
+          return shaped;
+        })
+        .filter(Boolean);
+    }
+    return base;
+  });
+const DEX_BY_NAME = (() => {
+  const map = new Map();
+  for (const m of DEX_LIST) {
+    map.set(normalizeKey(m.name), m);
+    for (const f of m.forms || []) map.set(normalizeKey(f.name), f);
+  }
+  return map;
+})();
+const getMon = (s) => DEX_BY_NAME.get(normalizeKey(s)) || null;
+
+// Alpha species membership set by Dex ID (use DEX index resolution for robustness)
+const ALPHA_ID_SET = (() => {
+  const ids = new Set();
+  try {
+    const lookup = (name) => {
+      try { return getMon(name); } catch { return null; }
+    };
+    for (const group of (alphaData?.normal_alpha || [])) {
+      for (const n of group || []) { const m = lookup(n); if (m?.id != null) ids.add(m.id); }
+    }
+    for (const groups of Object.values(alphaData?.event_alpha || {})) {
+      for (const g of groups || []) for (const n of g || []) { const m = lookup(n); if (m?.id != null) ids.add(m.id); }
+    }
+  } catch {}
+  return ids;
+})();
+
+// Precompile regular expressions that can locate Pokemon names inside a block
+// of text.  One regex matches names with spaces/hyphens preserved, while the
+// other works against a "compacted" string with all non-alphanumeric
+// characters removed.  Sorting by length ensures longer names are tested first
+// which prevents partial matches (e.g. "Mr Mime" before "Mr").
+const buildNameRegex = (transform) => {
+  const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const names = Array.from(DEX_BY_NAME.keys())
+    .map(transform)
+    .sort((a, b) => b.length - a.length)
+    .map(escape)
+    // Allow hyphens in Pokemon names to optionally appear as spaces in parsed text
+    .map(n => n.replace(/\\-/g, "[\\s-]?"));
+  return new RegExp(`(${names.join("|")})`, "gi");
+};
+const POKE_NAME_REGEX = buildNameRegex((k) => k);
+const POKE_NAME_COMPACT_REGEX = buildNameRegex((k) => k.replace(/[^a-z0-9]+/g, ""));
+const DEX_BY_ID = (() => {
+  const map = new Map();
+  for (const m of DEX_LIST) map.set(m.id, m);
+  return map;
+})();
+const getMonByDex = (id) => DEX_BY_ID.get(Number(id)) || null;
+
+const ITEM_LIST = (() => {
+  const src = Array.isArray(itemsRaw) ? itemsRaw : [];
+  const seen = new Set();
+  const list = [];
+  for (const item of src) {
+    if (item?.id === 0) continue; // skip placeholder entry
+    if (!item?.name || item.name.includes('?')) continue; // skip unknown items
+    const key = normalizeKey(item.name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push(item);
+  }
+  return list;
+})();
+
+const ITEM_INDEX = (() => {
+  const byId = new Map();
+  const byName = new Map();
+  for (const item of ITEM_LIST) {
+    if (item.id != null) byId.set(item.id, item);
+    byName.set(normalizeKey(item.name), item);
+  }
+  return { byId, byName };
+})();
+
+const MOVES_INDEX = (() => {
+  const byId = new Map();
+  for (const move of movesData) {
+    if (move.id != null) byId.set(move.id, move);
+  }
+  return { byId };
+})();
+
+const EVO_PARENTS = (() => {
+  const map = new Map();
+  for (const mon of DEX_LIST) {
+    for (const evo of mon.evolutions || []) {
+      if (!map.has(evo.id)) map.set(evo.id, []);
+      map.get(evo.id).push(mon.id);
+    }
+  }
+  return map;
+})();
+
+function normalizeEggGroup(g=''){
+  return String(g).toLowerCase().replace('warer','water').replace('hmanoid','humanoid').trim();
+}
+
+const MOVE_METHODS = [
+  { key:'start', label:'Start' },
+  { key:'lv', label:'Level' },
+  { key:'tutor', label:'Tutor' },
+  { key:'tmhm', label:'TM/HM' },
+  { key:'egg', label:'Egg' },
+  { key:'special', label:'Special' }
+];
+
+function groupMoves(list = []){
+  const out = { start: [], lv: [], tutor: [], tmhm: [], egg: [], special: [] };
+  for (const mv of list){
+    switch(mv.type){
+      case 'level':
+        if (mv.level <= 1) out.start.push(mv.name);
+        else out.lv.push({ level: mv.level, move: mv.name });
+        break;
+      case 'move_tutor':
+        out.tutor.push(mv.name);
+        break;
+      case 'move_learner_tools':
+        out.tmhm.push(mv.name);
+        break;
+      case 'egg_moves':
+        out.egg.push(mv.name);
+        break;
+      case 'special_moves':
+      case 'special_egg':
+        out.special.push(mv.name);
+        break;
+      default:
+        break;
+    }
+  }
+  out.lv.sort((a,b) => a.level - b.level);
+  return out;
+}
+
+/* ---------- sprite source helpers & component ---------- */
+function localSpriteCandidates(mon){
+  const id = String(mon?.id||'').trim();
+  const key = normalizeKey(mon?.name||'');
+  const bases = [SPRITES_BASE, `${import.meta.env.BASE_URL}sprites/`, `${import.meta.env.BASE_URL}sprites/pokeapi/`, `${import.meta.env.BASE_URL}sprites/national/`];
+  const exts = [SPRITES_EXT, '.png', '.gif', '.webp'];
+  const out = [];
+  for (const b of bases){ for (const e of exts){ if (id) out.push(`${b}${id}${e}`); if (key) out.push(`${b}${key}${e}`); } }
+  return [...new Set(out)];
+}
+  function spriteSources(mon, opts = {}){
+  const shiny = !!opts.shiny;
+  if (!mon) return [];
+
+  // Use placeholder for Pokemon with ID >= 650 (Event Pokemon with incorrect sprite data)
+  if (mon?.id != null && mon.id >= 650) {
+    return [PLACEHOLDER_POKEMON];
+  }
+
+  const arr = [];
+
+  // Prefer higher-resolution PokeAPI sprites first when we have a canonical dex number
+  // Our dex id lives on `mon.id` (not `mon.dex`).
+  if (mon?.id != null) {
+    if (shiny) {
+      // Shiny front_default (static path)
+      arr.push(`https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/shiny/${mon.id}.png`);
+    }
+    // Non-shiny default + official artwork
+    arr.push(`https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${mon.id}.png`);
+    arr.push(`https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${mon.id}.png`);
+    }
+
+  // Fallbacks to any provided or local sprites
+  if (!shiny) {
+    if (mon.sprite) arr.push(mon.sprite);
+    if (mon.sprites?.front_default) arr.push(mon.sprites.front_default);
+  } else {
+    if (mon.sprites?.front_shiny) arr.push(mon.sprites.front_shiny);
+    // Some species expose shiny official artwork
+    const shinyArt = mon.sprites?.other?.["official-artwork"]?.front_shiny;
+    if (shinyArt) arr.push(shinyArt);
+  }
+  if (mon.image) arr.push(mon.image);
+  if (mon.icon) arr.push(mon.icon);
+  arr.push(...localSpriteCandidates(mon));
+
+  return [...new Set(arr)].filter(Boolean);
+}
+  // Build best-guess PokeAPI slugs for alternate forms
+  function buildPokeApiSlugCandidates(mon){
+    const out = [];
+    const norm = (s='') => String(s).toLowerCase().normalize('NFKD')
+      .replace(/[^\w\s-]/g,'').replace(/\s+/g,'-').replace(/-+/g,'-').trim();
+    const add = (s) => { if (s && !out.includes(s)) out.push(s); };
+
+    if (!mon) return out;
+    add(mon.slug);
+    add(norm(mon.name));
+
+    const m = String(mon.name||'').match(/^(.*?)\s*\((.+)\)\s*$/);
+    if (m) {
+      const base = norm(m[1]);
+      const rawLabel = norm(m[2]);
+      // direct join
+      add(`${base}-${rawLabel}`);
+      // strip common suffix words like "form/forme/style/mode/trim"
+      let label = rawLabel
+        .replace(/\bforms?\b/g,'')
+        .replace(/\bformes?\b/g,'')
+        .replace(/\bmode\b/g,'')
+        .replace(/\bstyle\b/g,'')
+        .replace(/\bpattern\b/g,'')
+        .replace(/\bcoat\b/g,'')
+        .replace(/\bcloak\b/g,'')
+        .replace(/\btrim\b/g,'')
+        .replace(/\bsize\b/g,'')
+        .replace(/\bstandard-?mode\b/g,'standard')
+        .replace(/--+/g,'-').replace(/^-|-$/g,'');
+      if (label) add(`${base}-${label}`);
+      // regional adjective normalization
+      let label2 = label
+        .replace(/\balolan\b/,'alola')
+        .replace(/\bgalarian\b/,'galar')
+        .replace(/\bhisuian\b/,'hisui')
+        .replace(/\bpaldean\b/,'paldea')
+        .replace(/\beast-sea\b/,'east')
+        .replace(/\bwest-sea\b/,'west')
+        .replace(/--+/g,'-').replace(/^-|-$/g,'');
+      if (label2 && label2 !== label) add(`${base}-${label2}`);
+      // try also slug-without -form/forme suffix
+      if (mon.slug) {
+        const s1 = mon.slug.replace(/-forms?\b/,'').replace(/-formes?\b/,'');
+        add(s1);
+      }
+    }
+    return out.filter(Boolean);
+  }
+
+  async function resolvePokeapiSprite(mon){
+    const candidates = buildPokeApiSlugCandidates(mon);
+    // Try pokemon endpoint first
+    for (const slug of candidates){
+      try {
+        const r = await fetch(`https://pokeapi.co/api/v2/pokemon/${slug}`);
+        if (!r.ok) continue;
+        const d = await r.json();
+        const s = d?.sprites?.front_default || d?.sprites?.other?.["official-artwork"]?.front_default;
+        if (s) return s;
+      } catch {}
+    }
+    // Try pokemon-form endpoint as a fallback for forms that only exist there
+    for (const slug of candidates){
+      try {
+        const r = await fetch(`https://pokeapi.co/api/v2/pokemon-form/${slug}`);
+        if (!r.ok) continue;
+        const d = await r.json();
+        const s = d?.sprites?.front_default;
+        if (s) return s;
+      } catch {}
+    }
+    return null;
+  }
+  async function resolvePokeapiSpriteShiny(mon){
+    const candidates = buildPokeApiSlugCandidates(mon);
+    // Try pokemon endpoint first
+    for (const slug of candidates){
+      try {
+        const r = await fetch(`https://pokeapi.co/api/v2/pokemon/${slug}`);
+        if (!r.ok) continue;
+        const d = await r.json();
+        const s = d?.sprites?.front_shiny || d?.sprites?.other?.["official-artwork"]?.front_shiny;
+        if (s) return s;
+      } catch {}
+    }
+    // Try pokemon-form endpoint
+    for (const slug of candidates){
+      try {
+        const r = await fetch(`https://pokeapi.co/api/v2/pokemon-form/${slug}`);
+        if (!r.ok) continue;
+        const d = await r.json();
+        const s = d?.sprites?.front_shiny;
+        if (s) return s;
+      } catch {}
+    }
+    return null;
+  }
+  const SPRITE_ANIMATION_CACHE = new Map();
+
+  function animationSources(mon, opts = {}){
+    const shiny = !!opts.shiny;
+    if (!mon) return [];
+    const showdownBase = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/showdown/';
+    const bwBase = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/';
+    const suffix = shiny ? 'shiny/' : '';
+    const arr = [];
+
+    if (mon?.id != null) {
+      arr.push(`${showdownBase}${suffix}${mon.id}.gif`);
+      arr.push(`${bwBase}${suffix}${mon.id}.gif`);
+    }
+
+    const showdown = mon?.sprites?.other?.showdown;
+    if (showdown) {
+      const key = shiny ? 'front_shiny' : 'front_default';
+      if (showdown[key]) arr.push(showdown[key]);
+    }
+
+    const animated = mon?.sprites?.versions?.['generation-v']?.['black-white']?.animated;
+    if (animated) {
+      const key = shiny ? 'front_shiny' : 'front_default';
+      if (animated[key]) arr.push(animated[key]);
+    }
+
+    const slugCandidates = buildPokeApiSlugCandidates(mon);
+    for (const slug of slugCandidates) {
+      arr.push(`${showdownBase}${suffix}${slug}.gif`);
+    }
+
+    return [...new Set(arr)].filter(Boolean);
+  }
+
+  async function resolvePokeapiAnimation(mon, opts = {}){
+    if (!mon) return null;
+    const shiny = !!opts.shiny;
+    const candidates = buildPokeApiSlugCandidates(mon);
+    for (const slug of candidates){
+      try {
+        const r = await fetch(`https://pokeapi.co/api/v2/pokemon/${slug}`);
+        if (!r.ok) continue;
+        const d = await r.json();
+        const showdown = d?.sprites?.other?.showdown?.[shiny ? 'front_shiny' : 'front_default'];
+        if (showdown) return showdown;
+        const animated = d?.sprites?.versions?.['generation-v']?.['black-white']?.animated?.[shiny ? 'front_shiny' : 'front_default'];
+        if (animated) return animated;
+      } catch {}
+    }
+    return null;
+  }
+
+  function preloadImage(url){
+    if (!url) return Promise.reject(new Error('No image URL'));
+    if (typeof Image !== 'undefined'){
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(url);
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.src = url;
+      });
+    }
+    if (typeof fetch === 'function'){
+      return fetch(url, { method:'GET' }).then(resp => {
+        if (!resp.ok) throw new Error('Failed to load image');
+        return url;
+      });
+    }
+    return Promise.resolve(url);
+  }
+
+  function Sprite({ mon, size=42, alt='', forceShiny=false, playOnHover=false }) {
+    const [shinyGlobal, setShinyGlobal] = useState(false);
+    useEffect(() => {
+      let mounted = true;
+      getBoolean('shinySprites', false).then((value) => {
+        if (mounted) setShinyGlobal(value);
+      });
+      return () => { mounted = false; };
+    }, []);
+    useEffect(() => {
+      const onChange = (e) => setShinyGlobal(!!e?.detail?.enabled);
+      window.addEventListener('shiny-global-changed', onChange);
+      return () => window.removeEventListener('shiny-global-changed', onChange);
+    }, []);
+    const useShiny = !!(shinyGlobal || forceShiny);
+    const srcs = React.useMemo(()=> spriteSources(mon, { shiny: useShiny }), [mon, useShiny]);
+    const [idx, setIdx] = useState(0);
+    const [pokeSrc, setPokeSrc] = useState(null);
+    const [triedPokeApi, setTriedPokeApi] = useState(false);
+    useEffect(()=>{
+      setIdx(0); setPokeSrc(null); setTriedPokeApi(false);
+      const noDex = mon && (mon.dex == null && mon.id == null);
+      if (noDex) {
+        setTriedPokeApi(true);
+        const resolver = useShiny ? resolvePokeapiSpriteShiny : resolvePokeapiSprite;
+        resolver(mon).then((s) => { if (s) setPokeSrc(s); }).catch(()=>{});
+      }
+    }, [mon, useShiny]);
+    const staticSrc = pokeSrc || srcs[idx] || TRANSPARENT_PNG;
+
+    const enableAnimation = !!playOnHover;
+    const [wantsAnimation, setWantsAnimation] = useState(false);
+    const [animationSrc, setAnimationSrc] = useState(null);
+    const animationApiTriedRef = useRef(false);
+    const monSignature = React.useMemo(() => {
+      if (!mon) return 'null';
+      const parts = [];
+      if (mon.id != null) parts.push(`id:${mon.id}`);
+      if (mon.slug) parts.push(`slug:${mon.slug}`);
+      if (mon.name) parts.push(`name:${mon.name}`);
+      return parts.join('|') || 'anon';
+    }, [mon]);
+    useEffect(() => {
+      if (!enableAnimation) return;
+      animationApiTriedRef.current = false;
+      setAnimationSrc(prev => (prev !== null ? null : prev));
+    }, [enableAnimation, monSignature, useShiny]);
+    useEffect(() => {
+      if (!enableAnimation && wantsAnimation) {
+        setWantsAnimation(false);
+      }
+    }, [enableAnimation, wantsAnimation]);
+    const animationSrcs = React.useMemo(() => (
+      enableAnimation ? animationSources(mon, { shiny: useShiny }) : []
+    ), [enableAnimation, mon, useShiny]);
+    const animationCacheKey = React.useMemo(() => {
+      if (!enableAnimation || !mon) return '';
+      const parts = [useShiny ? 'shiny' : 'normal'];
+      if (mon.id != null) parts.push(`id:${mon.id}`);
+      if (mon.slug) parts.push(`slug:${mon.slug}`);
+      if (!mon.slug && mon.formSlug) parts.push(`slug:${mon.formSlug}`);
+      if (mon.name) parts.push(`name:${mon.name}`);
+      return parts.join('|');
+    }, [enableAnimation, mon, useShiny]);
+    useEffect(() => {
+      if (!enableAnimation) return;
+      if (!wantsAnimation) return;
+      if (!mon) return;
+      if (animationSrc) return;
+
+      let cancelled = false;
+      const cacheKey = animationCacheKey;
+
+      if (cacheKey && SPRITE_ANIMATION_CACHE.has(cacheKey)) {
+        const cached = SPRITE_ANIMATION_CACHE.get(cacheKey);
+        if (cached) setAnimationSrc(cached);
+        return;
+      }
+
+      const load = async () => {
+        for (const candidate of animationSrcs) {
+          if (!candidate) continue;
+          try {
+            await preloadImage(candidate);
+            if (cancelled) return;
+            if (cacheKey) SPRITE_ANIMATION_CACHE.set(cacheKey, candidate);
+            setAnimationSrc(candidate);
+            return;
+          } catch {}
+        }
+
+        if (!animationApiTriedRef.current) {
+          animationApiTriedRef.current = true;
+          try {
+            const resolved = await resolvePokeapiAnimation(mon, { shiny: useShiny });
+            if (cancelled) return;
+            if (resolved) {
+              try {
+                await preloadImage(resolved);
+                if (cancelled) return;
+                if (cacheKey) SPRITE_ANIMATION_CACHE.set(cacheKey, resolved);
+                setAnimationSrc(resolved);
+                return;
+              } catch {}
+            }
+          } catch {}
+        }
+
+        if (!cancelled && cacheKey && !SPRITE_ANIMATION_CACHE.has(cacheKey)) {
+          SPRITE_ANIMATION_CACHE.set(cacheKey, null);
+        }
+      };
+
+      load();
+
+      return () => { cancelled = true; };
+    }, [enableAnimation, wantsAnimation, mon, useShiny, animationSrc, animationSrcs, animationCacheKey]);
+    const displayedSrc = enableAnimation && wantsAnimation && animationSrc ? animationSrc : staticSrc;
+
+    const handleError = () => {
+      if (enableAnimation && wantsAnimation && animationSrc) {
+        if (animationCacheKey) SPRITE_ANIMATION_CACHE.set(animationCacheKey, null);
+        animationApiTriedRef.current = false;
+        setAnimationSrc(null);
+        return;
+      }
+      if (idx < srcs.length - 1) {
+        setIdx(idx + 1);
+      } else if (!triedPokeApi && mon) {
+        setTriedPokeApi(true);
+        const resolver = useShiny ? resolvePokeapiSpriteShiny : resolvePokeapiSprite;
+        resolver(mon).then((s) => { if (s) setPokeSrc(s); }).catch(()=>{});
+      }
+    };
+
+    return (
+      <img
+        src={displayedSrc}
+        alt={alt || mon?.name || ''}
+        style={{
+          width: size,
+          height: size,
+          maxWidth: '100%',
+          maxHeight: '100%',
+          objectFit: 'contain',
+          imageRendering: 'pixelated'
+        }}
+        onError={handleError}
+        onMouseEnter={enableAnimation ? () => setWantsAnimation(true) : undefined}
+        onMouseLeave={enableAnimation ? () => setWantsAnimation(false) : undefined}
+      />
+    );
+  }
+/* ---------- Type colors (Gen 1–5) ---------- */
+const TYPE_COLORS = {
+  normal:'#A8A77A', fire:'#EE8130', water:'#6390F0', electric:'#F7D02C',
+  grass:'#7AC74C', ice:'#96D9D6', fighting:'#C22E28', poison:'#A33EA1',
+  ground:'#E2BF65', flying:'#A98FF3', psychic:'#F95587', bug:'#A6B91A',
+  rock:'#B6A136', ghost:'#735797', dragon:'#6F35FC', dark:'#705746',
+  steel:'#B7B7CE'
+};
+function TypePill({ t, compact=false, large=false, onClick }){
+  const key = normalizeType(t);
+  if (!key) return null;
+  const bg = TYPE_COLORS[key] || '#555';
+  const pad = compact ? '2px 8px' : large ? '6px 12px' : '4px 10px';
+  const fontSize = compact ? 12 : large ? 15 : 13;
+  return (
+    <span
+      onClick={onClick}
+      title={onClick ? 'Filter by Type' : titleCase(key)}
+      style={{
+        display:'inline-block', padding:pad, fontSize, lineHeight:1,
+        borderRadius:999, fontWeight:800, color:'#111', background:bg, border:'1px solid #00000022', textShadow:'0 1px 0 #ffffff55',
+        cursor: onClick ? 'pointer' : 'default', userSelect: 'none'
+      }}
+    >{titleCase(key)}</span>
+  );
+}
+
+const EGG_GROUP_COLORS = {
+  monster:'#A8A77A', plant:'#7AC74C', dragon:'#6F35FC', bug:'#A6B91A',
+  flying:'#A98FF3', field:'#E2BF65', fairy:'#F95587', 'water a':'#6390F0',
+  'water b':'#4C7CF0', 'water c':'#1D7BF4', chaos:'#705746', humanoid:'#C22E28',
+  hmanoid:'#C22E28', ditto:'#F7D02C', mineral:'#B7B7CE', 'cannot breed':'#616161',
+  genderless:'#616161'
+};
+function EggGroupPill({ group, onClick }){
+  const key = normalizeEggGroup(group);
+  if (!key) return null;
+  const bg = EGG_GROUP_COLORS[key] || '#555';
+  return (
+    <span
+      onClick={onClick}
+      title={onClick ? 'Filter by Egg Group' : undefined}
+      style={{
+        display:'inline-block', padding:'4px 10px', fontSize:13, lineHeight:1,
+        borderRadius:999, fontWeight:800, color:'#111', background:bg,
+        border:'1px solid #00000022', cursor: onClick ? 'pointer' : 'default',
+        userSelect: 'none'
+      }}
+    >{titleCase(key)}</span>
+  );
+}
+
+const abilityCache = new Map();
+function useAbilityDesc(name){
+  const slug = normalizeKey(name);
+  const [desc, setDesc] = useState(abilityCache.get(slug) || '');
+  useEffect(() => {
+    if (!slug || abilityCache.has(slug)) return;
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(`https://pokeapi.co/api/v2/ability/${slug}`);
+        const json = await res.json();
+        const entry = (json.effect_entries || []).find(e => e.language?.name === 'en');
+        const d = entry?.short_effect || entry?.effect || '';
+        abilityCache.set(slug, d);
+        if (alive) setDesc(d);
+      } catch (e) {
+        if (alive) setDesc('');
+      }
+    })();
+    return () => { alive = false; };
+  }, [slug]);
+  return desc;
+}
+
+function AbilityPill({ label, name, compact = false }){
+  if (!name) return null;
+  const desc = useAbilityDesc(name);
+  const trimmedDesc = desc?.trim() || '';
+  const tooltipContent = trimmedDesc || titleCase(name);
+  // Unified ability text size; overflow handled with ellipsis
+  const fontPx = 13;
+  return (
+    <div style={{
+      display:'flex', alignItems:'center', gap:6,
+      padding: compact ? '2px 6px' : '4px 8px',
+      borderRadius:8,
+      background:'var(--surface)',
+      border:'1px solid var(--divider)',
+      minWidth: 0
+    }}>
+      <span className="label-muted" style={{ fontSize: compact ? 11 : 12 }}>{label}</span>
+      <DelayedTooltip content={tooltipContent} delay={400}>
+        <span
+          style={{
+            fontWeight:600,
+            color:'var(--accent)',
+            whiteSpace:'nowrap',
+            overflow:'hidden',
+            textOverflow:'ellipsis',
+            display:'inline-block',
+            minWidth: 0,
+            maxWidth: '100%',
+            fontSize: fontPx,
+            cursor: tooltipContent ? 'help' : 'default'
+          }}
+          aria-label={tooltipContent}
+        >{titleCase(name)}</span>
+      </DelayedTooltip>
+    </div>
+  );
+}
+
+// ---------- Nature data (PokeAPI) ----------
+const NATURE_CACHE_KEY = 'nature-list-v1';
+const STATIC_NATURES = [
+  { name: 'Hardy' },
+  { name: 'Lonely', inc: 'attack', dec: 'defense' },
+  { name: 'Brave', inc: 'attack', dec: 'speed' },
+  { name: 'Adamant', inc: 'attack', dec: 'special-attack' },
+  { name: 'Naughty', inc: 'attack', dec: 'special-defense' },
+  { name: 'Bold', inc: 'defense', dec: 'attack' },
+  { name: 'Docile' },
+  { name: 'Relaxed', inc: 'defense', dec: 'speed' },
+  { name: 'Impish', inc: 'defense', dec: 'special-attack' },
+  { name: 'Lax', inc: 'defense', dec: 'special-defense' },
+  { name: 'Timid', inc: 'speed', dec: 'attack' },
+  { name: 'Hasty', inc: 'speed', dec: 'defense' },
+  { name: 'Serious' },
+  { name: 'Jolly', inc: 'speed', dec: 'special-attack' },
+  { name: 'Naive', inc: 'speed', dec: 'special-defense' },
+  { name: 'Modest', inc: 'special-attack', dec: 'attack' },
+  { name: 'Mild', inc: 'special-attack', dec: 'defense' },
+  { name: 'Quiet', inc: 'special-attack', dec: 'speed' },
+  { name: 'Bashful' },
+  { name: 'Rash', inc: 'special-attack', dec: 'special-defense' },
+  { name: 'Calm', inc: 'special-defense', dec: 'attack' },
+  { name: 'Gentle', inc: 'special-defense', dec: 'defense' },
+  { name: 'Sassy', inc: 'special-defense', dec: 'speed' },
+  { name: 'Careful', inc: 'special-defense', dec: 'special-attack' },
+  { name: 'Quirky' }
+];
+const STAT_KEY_MAP = {
+  'attack': 'attack',
+  'defense': 'defense',
+  'special-attack': 'special_attack',
+  'special-defense': 'special_defense',
+  'speed': 'speed'
+};
+const STAT_ABBR = {
+  attack: 'Atk',
+  defense: 'Def',
+  special_attack: 'SpA',
+  special_defense: 'SpD',
+  speed: 'Spe'
+};
+
+function normalizeNatureRecord(n) {
+  const inc = n.inc ? STAT_KEY_MAP[n.inc] : null;
+  const dec = n.dec ? STAT_KEY_MAP[n.dec] : null;
+  const mods = { attack:1.0, defense:1.0, special_attack:1.0, special_defense:1.0, speed:1.0 };
+  if (inc && inc !== dec) mods[inc] = 1.1;
+  if (dec && inc !== dec) mods[dec] = 0.9;
+  return { name: n.name, inc: inc || null, dec: dec || null, mods };
+}
+
+function labelNature(n) {
+  if (!n) return '';
+  const name = titleCase(n.name || '');
+  if (!n.inc && !n.dec) return `${name} (+/-)`;
+  const plus = n.inc ? `+${STAT_ABBR[n.inc]}` : '';
+  const minus = n.dec ? `-${STAT_ABBR[n.dec]}` : '';
+  let body = plus && minus ? `${plus}, ${minus}` : (plus || minus);
+  return `${name} (${body})`;
+}
+
+function useNatures() {
+  const [list, setList] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem(NATURE_CACHE_KEY);
+      if (cached) return JSON.parse(cached);
+    } catch {}
+    const statics = STATIC_NATURES
+      .map(n => normalizeNatureRecord({ name: n.name, inc: n.inc || null, dec: n.dec || null }))
+      .sort((a,b)=> a.name.localeCompare(b.name));
+    return statics;
+  });
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch('https://pokeapi.co/api/v2/nature?limit=1000');
+        if (!r.ok) return;
+        const d = await r.json();
+        const entries = Array.isArray(d.results) ? d.results : [];
+        const all = await Promise.all(entries.map(async e => {
+          try {
+            const rr = await fetch(e.url);
+            if (!rr.ok) return null;
+            const jj = await rr.json();
+            const inc = jj.increased_stat?.name || null;
+            const dec = jj.decreased_stat?.name || null;
+            return normalizeNatureRecord({ name: e.name, inc, dec });
+          } catch { return null; }
+        }));
+        const clean = all.filter(Boolean).sort((a,b)=> a.name.localeCompare(b.name));
+        if (clean.length && alive) {
+          setList(clean);
+          try { sessionStorage.setItem(NATURE_CACHE_KEY, JSON.stringify(clean)); } catch{}
+        }
+      } catch {}
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const byName = useMemo(() => {
+    const m = new Map();
+    for (const n of list) m.set(normalizeKey(n.name), n);
+    return m;
+  }, [list]);
+
+  return { list, byName };
+}
+
+// ---------- Stat computation ----------
+const STAT_KEYS = ['hp','attack','defense','special_attack','special_defense','speed'];
+function clamp(n, lo, hi){
+  const x = Number(n);
+  if (isNaN(x)) return lo;
+  return Math.max(lo, Math.min(hi, x));
+}
+function getBaseStatsFrom(mon = {}){
+  const s = mon?.stats || {};
+  return {
+    hp: Number(s.base_hp ?? s.hp ?? s.HP ?? 0) || 0,
+    attack: Number(s.base_attack ?? s.attack ?? s.att ?? 0) || 0,
+    defense: Number(s.base_defense ?? s.defense ?? s.def ?? 0) || 0,
+    special_attack: Number(s.base_special_attack ?? s.special_attack ?? s.s_att ?? s.sp_attack ?? 0) || 0,
+    special_defense: Number(s.base_special_defense ?? s.special_defense ?? s.s_def ?? s.sp_defense ?? 0) || 0,
+    speed: Number(s.base_speed ?? s.speed ?? s.spd ?? 0) || 0,
+  };
+}
+function getDisplayStatsFrom(mon = {}){
+  const s = mon?.stats || {};
+  return {
+    hp: Number(s.hp ?? s.HP ?? s.base_hp ?? 0) || 0,
+    attack: Number(s.attack ?? s.att ?? s.base_attack ?? 0) || 0,
+    defense: Number(s.defense ?? s.def ?? s.base_defense ?? 0) || 0,
+    special_attack: Number(s.special_attack ?? s.s_att ?? s.sp_attack ?? s.base_special_attack ?? 0) || 0,
+    special_defense: Number(s.special_defense ?? s.s_def ?? s.sp_defense ?? s.base_special_defense ?? 0) || 0,
+    speed: Number(s.speed ?? s.spd ?? s.base_speed ?? 0) || 0,
+  };
+}
+function computeFinalStats(base, ivs, evs, level, natureMods){
+  const L = clamp(level, 1, 100);
+  const IV = Object.fromEntries(STAT_KEYS.map(k => [k, clamp(ivs?.[k] ?? 0, 0, 31)]));
+  const EVraw = Object.fromEntries(STAT_KEYS.map(k => [k, clamp(evs?.[k] ?? 0, 0, 252)]));
+  let total = STAT_KEYS.reduce((sum,k)=> sum + (EVraw[k]||0), 0);
+  const EV = { ...EVraw };
+  if (total > 510) {
+    let excess = total - 510;
+    const order = [...STAT_KEYS].sort((a,b) => (EV[b]||0) - (EV[a]||0));
+    for (const k of order){
+      if (excess <= 0) break;
+      const take = Math.min(excess, EV[k]);
+      EV[k] -= take;
+      excess -= take;
+    }
+  }
+  const EVq = Object.fromEntries(STAT_KEYS.map(k => [k, Math.floor((EV[k]||0) / 4)]));
+  const Nat = natureMods || { attack:1, defense:1, special_attack:1, special_defense:1, speed:1 };
+
+  const out = {};
+  out.hp = Math.floor(((2*base.hp + IV.hp + EVq.hp) * L) / 100) + L + 10;
+  for (const k of ['attack','defense','special_attack','special_defense','speed']){
+    const raw = Math.floor(((2*base[k] + IV[k] + EVq[k]) * L) / 100) + 5;
+    const mod = Nat[k] ?? 1.0;
+    out[k] = Math.floor(raw * mod);
+  }
+  return out;
+}
+function sumStats(map){ return ['hp','attack','defense','special_attack','special_defense','speed'].reduce((s,k)=> s + ((map?.[k]||0) | 0), 0); }
+
+function mkInitialBuild(){
+  return {
+    level: '',
+    nature: '',
+    iv: { hp:'', attack:'', defense:'', special_attack:'', special_defense:'', speed:'' },
+    ev: { hp:'', attack:'', defense:'', special_attack:'', special_defense:'', speed:'' },
+  };
+}
+
+function isDirty(b){
+  if (!b) return false;
+  if (b.level !== '' && b.level != null) return true;
+  if (b.nature && normalizeKey(b.nature) !== '') return true;
+  for (const k of ['hp','attack','defense','special_attack','special_defense','speed']){ if (b.iv?.[k] !== '' && (b.iv?.[k] ?? 0) !== 0) return true; }
+  for (const k of ['hp','attack','defense','special_attack','special_defense','speed']){ if (b.ev?.[k] !== '' && (b.ev?.[k] ?? 0) !== 0) return true; }
+  return false;
+}
+
+function coerceBuild(b){
+  const rawL = b?.level;
+  const level = (rawL === '' || rawL == null)
+    ? 50
+    : clamp(parseInt(rawL, 10) || 1, 1, 100);
+  return {
+    level,
+    nature: b?.nature || '',
+    iv: { hp: b?.iv?.hp === '' ? 0 : (b?.iv?.hp ?? 0), attack: b?.iv?.attack === '' ? 0 : (b?.iv?.attack ?? 0), defense: b?.iv?.defense === '' ? 0 : (b?.iv?.defense ?? 0), special_attack: b?.iv?.special_attack === '' ? 0 : (b?.iv?.special_attack ?? 0), special_defense: b?.iv?.special_defense === '' ? 0 : (b?.iv?.special_defense ?? 0), speed: b?.iv?.speed === '' ? 0 : (b?.iv?.speed ?? 0) },
+    ev: { hp: b?.ev?.hp === '' ? 0 : (b?.ev?.hp ?? 0), attack: b?.ev?.attack === '' ? 0 : (b?.ev?.attack ?? 0), defense: b?.ev?.defense === '' ? 0 : (b?.ev?.defense ?? 0), special_attack: b?.ev?.special_attack === '' ? 0 : (b?.ev?.special_attack ?? 0), special_defense: b?.ev?.special_defense === '' ? 0 : (b?.ev?.special_defense ?? 0), speed: b?.ev?.speed === '' ? 0 : (b?.ev?.speed ?? 0) },
+  };
+}
+
+function underlineFrom(override, baseline){
+  const set = new Set();
+  if (!override || !baseline) return set;
+  for (const k of ['hp','attack','defense','special_attack','special_defense','speed']){ if ((override[k]||0) !== (baseline[k]||0)) set.add(k); }
+  if (sumStats(override) !== sumStats(baseline)) set.add('total');
+  return set;
+}
+
+function NatureSelect({ value, onChange, natureList }){
+  return (
+    <select
+      className="input"
+      value={value || ''}
+      onChange={(e)=> onChange?.(e.target.value)}
+      style={{ height: 20, padding: '0 32px 0 14px', minWidth: 140 }}
+      title="Nature"
+    >
+      <option value="">Nature</option>
+      {natureList.map((n) => (
+        <option key={n.name} value={n.name}>{labelNature(n)}</option>
+      ))}
+    </select>
+  );
+}
+
+function LabeledPillBox({ label, value, title }){
+  if (value == null || value === '') return null;
+  return (
+    <div
+      title={title || ''}
+      style={{
+        display:'flex', alignItems:'center', gap:6,
+        padding:'4px 8px',
+        borderRadius:8,
+        background:'var(--surface)',
+        border:'1px solid var(--divider)'
+      }}
+    >
+      <span className="label-muted" style={{ fontSize:12 }}>{label}</span>
+      <span style={{ fontWeight:700 }}>{value}</span>
+    </div>
+  );
+}
+
+// Delayed tooltip wrapper for hover content (e.g., item descriptions)
+function DelayedTooltip({ content, delay = 1000, maxWidth = 360, children }){
+  const [visible, setVisible] = React.useState(false);
+  const timerRef = React.useRef(null);
+  const resolvedMaxWidth = typeof maxWidth === 'number' ? maxWidth : 360;
+  const resolvedMinWidth = Math.min(resolvedMaxWidth, 260);
+  const onEnter = () => {
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setVisible(true), delay);
+  };
+  const onLeave = () => {
+    clearTimeout(timerRef.current);
+    setVisible(false);
+  };
+  return (
+    <span style={{ position:'relative', display:'inline-flex', alignItems:'center' }} onMouseEnter={onEnter} onMouseLeave={onLeave}>
+      {children}
+      {visible && content && (
+        <span
+          style={{
+            position:'absolute',
+            bottom:'calc(100% + 8px)', left:'50%', transform:'translateX(-50%)',
+            maxWidth: resolvedMaxWidth,
+            minWidth: resolvedMinWidth,
+            background:'var(--surface)', color:'var(--text)',
+            border:'1px solid var(--divider)', borderRadius:8,
+            padding:'8px 12px', fontSize:12, lineHeight:1.4, boxShadow:'0 6px 20px rgba(0,0,0,.35)',
+            zIndex:50, whiteSpace:'normal', textAlign:'left'
+          }}
+        >
+          {content}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function InfoPill({ label, value, large=false }){
+  if (value == null || value === '') return null;
+  return (
+    <div style={{
+      display:'flex', alignItems:'center', gap:4,
+      padding: large ? '4px 10px' : '2px 8px',
+      borderRadius:8,
+      background:'var(--surface)',
+      border:'1px solid var(--divider)',
+      fontSize: large ? 14 : undefined
+    }}>
+      <span className="label-muted" style={{ fontSize:large ? 13 : 12 }}>{label}:</span>
+      <span style={{ fontWeight:600 }}>{value}</span>
+    </div>
+  );
+}
+
+/* ---------- Compare View ---------- */
+function StatInputBox({ label, value, min, max, onChange }) {
+  return (
+    <div className="profile-stat-input">
+      <div className="profile-stat-input-label">{label}</div>
+      <input
+        className="input profile-stat-input-field"
+        type="number"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        min={min}
+        max={max}
+        value={value}
+        onChange={onChange}
+      />
+    </div>
+  );
+}
+
+function StatsRow({ mon, other=null, override=null, otherOverride=null, underlineKeys=new Set(), build, onSetIV, onSetEV, onSetLevel, natureEl=null }) {
+  const baseStats = getBaseStatsFrom(mon || {});
+  const otherBaseStats = other ? getBaseStatsFrom(other) : null;
+  const keyMeta = [
+    { label: 'HP', key: 'hp', color: '#f87171' },
+    { label: 'Att', key: 'attack', color: '#fb923c' },
+    { label: 'Def', key: 'defense', color: '#facc15' },
+    { label: 'Sp. Atk', key: 'special_attack', color: '#60a5fa' },
+    { label: 'Sp. Def', key: 'special_defense', color: '#34d399' },
+    { label: 'Spd', key: 'speed', color: '#f472b6' },
+  ];
+
+  const map = Object.fromEntries(keyMeta.map(({ label, key }) => {
+    const raw = override && override[key] != null ? override[key] : (Number(baseStats[key]) || 0);
+    return [label, raw];
+  }));
+  const otherMap = other ? Object.fromEntries(keyMeta.map(({ label, key }) => {
+    const raw = otherOverride && otherOverride[key] != null ? otherOverride[key] : (Number(otherBaseStats?.[key]) || 0);
+    return [label, raw];
+  })) : null;
+  const total = keyMeta.reduce((sum, { label }) => sum + (Number(map[label]) || 0), 0);
+  const totalOther = other ? keyMeta.reduce((sum, { label }) => sum + (Number(otherMap?.[label]) || 0), 0) : null;
+
+  const evTotal = ['hp','attack','defense','special_attack','special_defense','speed']
+    .reduce((s,k)=> s + (Number(build?.ev?.[k] || 0) || 0), 0);
+
+  const [showExtras, setShowExtras] = useState(false);
+
+  const maxStatValue = Math.max(
+    180,
+    ...keyMeta.map(({ label }) => Number(map[label]) || 0),
+    ...(other ? keyMeta.map(({ label }) => Number(otherMap?.[label]) || 0) : [])
+  );
+
+  const valueToPercent = (value) => {
+    const pct = Math.max(6, Math.round((Number(value) || 0) / maxStatValue * 100));
+    return pct + '%';
+  };
+
+  const toggleExtras = () => {
+    if (showExtras) {
+      for (const { key } of keyMeta) {
+        onSetEV && onSetEV(key, '');
+        onSetIV && onSetIV(key, '');
+      }
+      onSetLevel && onSetLevel('');
+    }
+    setShowExtras((prev) => !prev);
+  };
+
+  const underlineTotal = underlineKeys?.has('total');
+
+  return (
+    <div className="profile-stats">
+      <div className="profile-stats-lines">
+        {keyMeta.map(({ label, key, color }) => {
+          const value = map[label] ?? '-';
+          const numericValue = Number(value) || 0;
+          const underline = underlineKeys?.has(key);
+          const diff = other ? ((Number(map[label]) || 0) - (Number(otherMap?.[label]) || 0)) : null;
+
+          return (
+            <div key={label} className="profile-stat-line">
+              <span className="profile-stat-label">{label}</span>
+              <div className="profile-stat-bar">
+                <div className="profile-stat-bar-fill" style={{ width: valueToPercent(numericValue), background: color }} />
+              </div>
+              <span className={'profile-stat-value' + (underline ? ' is-underlined' : '')}>{value ?? '-'}</span>
+              {diff != null && diff !== 0 && (
+                <span className={'profile-stat-diff ' + (diff > 0 ? 'is-positive' : 'is-negative')}>
+                  {diff > 0 ? '+' + diff : diff}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="profile-stat-total">
+        <span className="profile-stat-label">Total</span>
+        <div className="profile-stat-total-value">
+          <span className={'profile-stat-value' + (underlineTotal ? ' is-underlined' : '')}>{total || '-'}</span>
+          {totalOther != null && totalOther !== undefined && (total - totalOther) !== 0 && (
+            <span className={'profile-stat-diff ' + ((total - totalOther) > 0 ? 'is-positive' : 'is-negative')}>
+              {(total - totalOther) > 0 ? '+' + (total - totalOther) : (total - totalOther)}
+            </span>
+          )}
+        </div>
+      </div>
+      {natureEl && (
+        <div className="profile-nature-row">
+          {natureEl}
+        </div>
+      )}
+      <button type="button" className="profile-stats-toggle" onClick={toggleExtras}>
+        Include IVs and EVs
+        <span className="profile-stats-toggle-icon">{showExtras ? 'v' : '>'}</span>
+      </button>
+      {showExtras && (
+        <div className="profile-stats-extra">
+          <div className="profile-stats-extra-grid">
+            {keyMeta.map(({ label, key }) => (
+              <StatInputBox
+                key={'iv-' + key}
+                label={label + ' IV'}
+                value={build?.iv?.[key] ?? ''}
+                min={0}
+                max={31}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  const val = raw === '' ? '' : clamp(parseInt(raw, 10) || 0, 0, 31);
+                  onSetIV && onSetIV(key, val);
+                }}
+              />
+            ))}
+            <StatInputBox
+              label="Level"
+              value={build?.level ?? ''}
+              min={1}
+              max={100}
+              onChange={(e) => {
+                const raw = e.target.value;
+                const val = raw === '' ? '' : clamp(parseInt(raw, 10) || 0, 1, 100);
+                onSetLevel && onSetLevel(val);
+              }}
+            />
+            {keyMeta.map(({ label, key }) => (
+              <StatInputBox
+                key={'ev-' + key}
+                label={label + ' EV'}
+                value={build?.ev?.[key] ?? ''}
+                min={0}
+                max={252}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  const val = raw === '' ? '' : clamp(parseInt(raw, 10) || 0, 0, 252);
+                  onSetEV && onSetEV(key, val);
+                }}
+              />
+            ))}
+            <div className="profile-stat-total-card">
+              <div className="profile-stat-input-label">EV Total</div>
+              <div className="profile-stat-total-value"><span>{evTotal || 0}</span></div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AbilityInline({ idx, name }){
+  const desc = useAbilityDesc(name);
+  const label = idx === 2 ? 'H.' : `${idx + 1}.`;
+  const tooltipContent = desc?.trim() ? desc.trim() : null;
+  return (
+    <DelayedTooltip content={tooltipContent} delay={400}>
+      <span
+        style={{ marginRight:10, display:'inline-flex', alignItems:'center', gap:4, cursor: tooltipContent ? 'help' : 'default' }}
+        aria-label={tooltipContent || undefined}
+      >
+        <span className="label-muted" style={{ fontWeight:700 }}>{label}</span>
+        <span style={{ fontWeight:700 }}>{titleCase(name)}</span>
+      </span>
+    </DelayedTooltip>
+  );
+}
+
+function WeakResLine({ types, kind='weak' }){
+  const w = computeWeakness(types);
+  const entries = [];
+  if (kind==='weak') {
+    for (const t of w.x4) entries.push({ t, pct: '400%' });
+    for (const t of w.x2) entries.push({ t, pct: '200%' });
+  } else {
+    for (const t of w.x0_5) entries.push({ t, pct: '50%' });
+    for (const t of w.x0_25) entries.push({ t, pct: '25%' });
+    for (const t of w.x0) entries.push({ t, pct: '0%' });
+  }
+  return (
+    <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
+      {entries.length === 0 && <span className="label-muted">None</span>}
+      {entries.map(({t,pct}) => (
+        <span key={`${kind}-${t}`} style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+          <TypePill t={t} compact />
+          <span className="label-muted" style={{ fontSize:12 }}>{pct}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function CompareBlock({ mon, other, onClear, onReplaceFromTeam, build, onSetIV, onSetEV, onSetLevel, natureEl, override=null, otherOverride=null, underlineKeys=new Set() }){
+  const hasMon = !!mon;
+  const types = (mon?.types || []).map(normalizeType);
+  const abilities = (mon?.abilities || []).map(a => a?.name).filter(Boolean);
+  // If any ability names are long, use a more compact presentation.
+  const useCompactAbilities = abilities.some(a => (a || '').length > 12) || abilities.join('').length > 28;
+
+  const teamSelect = (() => {
+    let teamNames = [];
+    try {
+      const saved = JSON.parse(sessionStorage.getItem('teamBuilderCurrent') || '[]');
+      if (Array.isArray(saved)) teamNames = saved;
+      else if (saved && typeof saved === 'object' && Array.isArray(saved.mons)) teamNames = saved.mons;
+    } catch {}
+    const options = (teamNames || []).map(s => String(s || '').trim()).filter(Boolean);
+    const hasAny = options.length > 0;
+    const handleSelect = (e) => {
+      const name = e.target.value;
+      if (!name) return;
+      try {
+        const picked = getMon(name);
+        if (picked && onReplaceFromTeam) onReplaceFromTeam(picked);
+      } catch {}
+      e.target.selectedIndex = 0;
+    };
+    return (
+      <select
+        title="Replace From Active Team"
+        onChange={handleSelect}
+        className="input"
+        style={{ position:'absolute', top:44, left:8, height:28, borderRadius:8, width:'auto', maxWidth:220 }}
+      >
+        <option value="">Replace From Active Team</option>
+        {hasAny ? (
+          options.map((n, i) => <option key={`${n}-${i}`} value={n}>{titleCase(n)}</option>)
+        ) : (
+          <option value="" disabled>No Active Pokemon</option>
+        )}
+      </select>
+    );
+  })();
+
+  if (!hasMon) {
+    return (
+      <div className="faint-grid" style={{ padding:12, position:'relative', minHeight:360, display:'flex', alignItems:'center', justifyContent:'center' }}>
+        {teamSelect}
+        <div className="label-muted" style={{ fontWeight:700 }}>No Pokemon Selected</div>
+      </div>
+    );
+  }
+
+  // Helpers for two-row chip layout
+  const twoRowSplit = (arr = []) => {
+    const a = [...arr];
+    const mid = Math.ceil(a.length / 2);
+    return [a.slice(0, mid), a.slice(mid)];
+  };
+  const w = computeWeakness(types);
+  const weaknessEntries = [
+    ...w.x4.map(t => ({ t, pct: '400%' })),
+    ...w.x2.map(t => ({ t, pct: '200%' })),
+  ];
+  const resistEntries = [
+    ...w.x0_5.map(t => ({ t, pct: '50%' })),
+    ...w.x0_25.map(t => ({ t, pct: '25%' })),
+    ...w.x0.map(t => ({ t, pct: '0%' })),
+  ];
+  const [weakRow1, weakRow2] = twoRowSplit(weaknessEntries);
+  const [resRow1, resRow2] = twoRowSplit(resistEntries);
+
+  // Stat diffs vs other (when present)
+  const statKeys = [
+    ['HP','hp'], ['Att','attack'], ['Def','defense'],
+    ['Sp. Atk','special_attack'], ['Sp. Def','special_defense'], ['Spd','speed']
+  ];
+  // Use display stats to correctly resolve special stats
+  const sA = getDisplayStatsFrom(mon || {});
+  const sB = other ? getDisplayStatsFrom(other) : {};
+  const statDiffs = statKeys.map(([lab, key]) => {
+    const a = Number(sA[key]) || 0;
+    const b = Number(sB[key]) || 0;
+    const diff = a - b;
+    return { lab, diff };
+  });
+  const totalA = statKeys.reduce((sum, [,k]) => sum + (Number(sA[k]) || 0), 0);
+  const totalB = statKeys.reduce((sum, [,k]) => sum + (Number(sB[k]) || 0), 0);
+  const totalDiff = totalA - totalB;
+
+  const rowWrapStyle = { borderTop:'1px solid var(--divider)', paddingTop:8, marginTop:8 };
+
+  return (
+    <div className="faint-grid" style={{ padding:12, position:'relative' }}>
+      {teamSelect}
+      <button
+        type="button"
+        className="region-btn"
+        title="Swap"
+        onClick={onClear}
+        style={{ position:'absolute', top:8, right:8 }}
+      >
+        Swap
+      </button>
+      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8 }}>
+        <Sprite mon={mon} size={120} alt={mon.name} />
+        <div style={{ fontSize:20, fontWeight:900 }}>{titleCase(mon.name)}</div>
+        {mon.id != null && (
+          <div className="label-muted">Dex #{mon.id}</div>
+        )}
+      </div>
+      <div style={{ marginTop:10, display:'grid', gap:8 }}>
+        {abilities.length > 0 && (
+          <div style={rowWrapStyle}>
+            <div style={{ display:'grid', gridTemplateColumns:'110px 1fr', gap:8, alignItems:'center' }}>
+              <div className="label-muted" style={{ fontWeight:700 }}>Abilities</div>
+              <div
+                style={{
+                  display:'grid',
+                  gridTemplateColumns: `repeat(${abilities.length}, minmax(0, 1fr))`,
+                  gap:8,
+                  alignItems:'center',
+                  // Consistent one-line row across both compare blocks
+                  minHeight: 36
+                }}
+              >
+                {abilities.map((a,i) => (
+                  <AbilityPill
+                    key={`${a}-${i}`}
+                    label={i===2? 'Hidden' : `${i+1}`}
+                    name={a}
+                    compact={useCompactAbilities}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={rowWrapStyle}>
+          <div style={{ display:'grid', gridTemplateColumns:'110px 1fr', gap:8, alignItems:'center' }}>
+            <div className="label-muted" style={{ fontWeight:700 }}>Type</div>
+            <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+              {(types || []).map(tp => <TypePill key={tp} t={tp} />)}
+            </div>
+          </div>
+        </div>
+
+        <div style={rowWrapStyle}>
+          <div style={{ display:'grid', gridTemplateColumns:'110px 1fr', gap:8 }}>
+            <div className="label-muted" style={{ fontWeight:700, alignSelf:'center' }}>Weakness</div>
+            <div>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', minHeight:28 }}>
+                {weakRow1.length ? weakRow1.map(({t,pct},i) => (
+                  <span key={`w1-${t}-${i}`} style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+                    <TypePill t={t} />
+                    <span className="label-muted" style={{ fontSize:12 }}>{pct}</span>
+                  </span>
+                )) : <span className="label-muted">None</span>}
+              </div>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginTop:6, minHeight:28 }}>
+                {weakRow2.length ? weakRow2.map(({t,pct},i) => (
+                  <span key={`w2-${t}-${i}`} style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+                    <TypePill t={t} />
+                    <span className="label-muted" style={{ fontSize:12 }}>{pct}</span>
+                  </span>
+                )) : <span style={{ visibility:'hidden' }}>.</span>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style={rowWrapStyle}>
+          <div style={{ display:'grid', gridTemplateColumns:'110px 1fr', gap:8 }}>
+            <div className="label-muted" style={{ fontWeight:700, alignSelf:'center' }}>Resistance</div>
+            <div>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', minHeight:28 }}>
+                {resRow1.length ? resRow1.map(({t,pct},i) => (
+                  <span key={`r1-${t}-${i}`} style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+                    <TypePill t={t} />
+                    <span className="label-muted" style={{ fontSize:12 }}>{pct}</span>
+                  </span>
+                )) : <span className="label-muted">None</span>}
+              </div>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginTop:6, minHeight:28 }}>
+                {resRow2.length ? resRow2.map(({t,pct},i) => (
+                  <span key={`r2-${t}-${i}`} style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+                    <TypePill t={t} />
+                    <span className="label-muted" style={{ fontSize:12 }}>{pct}</span>
+                  </span>
+                )) : <span style={{ visibility:'hidden' }}>.</span>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {(mon.stats && Object.keys(mon.stats).length > 0) && (
+          <div style={rowWrapStyle}>
+            <div className="label-muted" style={{ fontWeight:700, marginBottom:6 }}>Base Stats</div>
+            <StatsRow
+              mon={mon}
+              other={other}
+              override={override}
+              otherOverride={otherOverride}
+              underlineKeys={underlineKeys}
+              build={build}
+              onSetIV={onSetIV}
+              onSetEV={onSetEV}
+              onSetLevel={onSetLevel}
+              natureEl={natureEl}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+
+function CompareView({ left, right, onClearLeft, onClearRight, onReplaceLeftFromTeam, onReplaceRightFromTeam }){
+  const { list: natureList, byName: naturesByName } = useNatures();
+
+  const [leftBuild, setLeftBuild] = useState(() => mkInitialBuild());
+  const [rightBuild, setRightBuild] = useState(() => mkInitialBuild());
+
+  const leftDirty = isDirty(leftBuild);
+  const rightDirty = isDirty(rightBuild);
+
+  const leftBase = useMemo(() => left ? getBaseStatsFrom(left) : null, [left]);
+  const rightBase = useMemo(() => right ? getBaseStatsFrom(right) : null, [right]);
+
+  const natureModsOf = (name) => {
+    const n = naturesByName.get(normalizeKey(name || ''));
+    return n?.mods || { attack:1, defense:1, special_attack:1, special_defense:1, speed:1 };
+  };
+
+  const leftOverride = useMemo(() => {
+    if (!left || !leftBase) return null;
+    if (!leftDirty) return null;
+    const b = coerceBuild(leftBuild);
+    return computeFinalStats(leftBase, b.iv, b.ev, b.level, natureModsOf(b.nature));
+  }, [left, leftBase, leftBuild, leftDirty]);
+  const rightOverride = useMemo(() => {
+    if (!right || !rightBase) return null;
+    if (!rightDirty) return null;
+    const b = coerceBuild(rightBuild);
+    return computeFinalStats(rightBase, b.iv, b.ev, b.level, natureModsOf(b.nature));
+  }, [right, rightBase, rightBuild, rightDirty]);
+
+  const leftUnderline = useMemo(() => underlineFrom(leftOverride, leftBase), [leftOverride, leftBase]);
+  const rightUnderline = useMemo(() => underlineFrom(rightOverride, rightBase), [rightOverride, rightBase]);
+
+  function makeSetters(side) {
+    const setBuild = side === 'left' ? setLeftBuild : setRightBuild;
+    return {
+      onSetIV: (key, val) => setBuild((prev) => ({ ...prev, iv: { ...prev.iv, [key]: val } })),
+      onSetEV: (key, val) => setBuild((prev) => {
+        const next = { ...prev, ev: { ...prev.ev, [key]: val } };
+        const sum = ['hp','attack','defense','special_attack','special_defense','speed'].reduce((s,k)=> s + (Number(next.ev[k] || 0) || 0), 0);
+        if (sum <= 510) return next;
+        const others = sum - (Number(next.ev[key] || 0) || 0);
+        const allowed = Math.max(0, 510 - others);
+        return { ...prev, ev: { ...prev.ev, [key]: Math.min(allowed, Number(val)||0) } };
+      }),
+      onSetLevel: (val) => setBuild((prev) => ({ ...prev, level: val }))
+    };
+  }
+  const leftSetters = makeSetters('left');
+  const rightSetters = makeSetters('right');
+
+  return (
+    <div style={{ marginTop:12 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+        <CompareBlock
+          mon={left}
+          other={right}
+          onClear={onClearLeft}
+          onReplaceFromTeam={onReplaceLeftFromTeam}
+          build={leftBuild}
+          onSetIV={leftSetters.onSetIV}
+          onSetEV={leftSetters.onSetEV}
+          onSetLevel={leftSetters.onSetLevel}
+          natureEl={<NatureSelect natureList={natureList} value={leftBuild.nature} onChange={(v)=> setLeftBuild(prev=> ({...prev, nature:v}))} />}
+          override={leftOverride}
+          otherOverride={rightOverride}
+          underlineKeys={leftUnderline}
+        />
+        <CompareBlock
+          mon={right}
+          other={left}
+          onClear={onClearRight}
+          onReplaceFromTeam={onReplaceRightFromTeam}
+          build={rightBuild}
+          onSetIV={rightSetters.onSetIV}
+          onSetEV={rightSetters.onSetEV}
+          onSetLevel={rightSetters.onSetLevel}
+          natureEl={<NatureSelect natureList={natureList} value={rightBuild.nature} onChange={(v)=> setRightBuild(prev=> ({...prev, nature:v}))} />}
+          override={rightOverride}
+          otherOverride={leftOverride}
+          underlineKeys={rightUnderline}
+        />
+      </div>
+    </div>
+  );
+}
+
+function formatHeight(h){ return h==null? '--' : `${(h/10).toFixed(1)} m`; }
+function formatWeight(w){ return w==null? '--' : `${(w/10).toFixed(1)} kg`; }
+function formatGenderRatio(r){
+  if (r == null) return "--";
+  const female = Math.round((r/255)*100);
+  const male = 100 - female;
+  return `${male}% M / ${female}% F`;
+}
+/* ---------- Method & Rarity palettes ---------- */
+function methodKey(m=''){ return String(m).toLowerCase().trim(); }
+
+function normalizeTimeTag(tag=''){
+  const parts = String(tag).toLowerCase().split(/[\/]/).map(s=>s.trim()).filter(Boolean);
+  if (!parts.length) return '';
+  const order = ['morning','day','night'];
+  const times = order.filter(t => parts.includes(t)).map(titleCase);
+  // Ignore season tags entirely since seasonal encounters are now uniform
+  const others = parts.filter(p => !order.includes(p) && !/^season\d+$/.test(p)).map(titleCase);
+  const result = [...times, ...others];
+  return result.join('/') || '';
+}
+
+// Balance methods like "Lure (Water" -> "Lure (Water)"
+function cleanMethodLabel(method=''){
+  let m = String(method || '').trim();
+  // Drop stray trailing ')' (bad source data)
+  m = m.replace(/\)+$/,'');
+  // Balance parentheses if needed
+  const open = (m.match(/\(/g) || []).length;
+  const close = (m.match(/\)/g) || []).length;
+  if (open > close) m = m + ')';
+  // Normalize Horde casing
+  if (/^hordes?\b/i.test(m)) m = 'Horde';
+  // Normalize time/season tags
+  m = m.replace(/\(([^)]+)\)/g, (_, t) => {
+    const norm = normalizeTimeTag(t);
+    return norm ? `(${norm})` : '';
+  });
+  return m.trim();
+}
+
+function MethodPill({ method, compact=false, hordeSize }){
+  const { methodColors, rarityColors } = React.useContext(ColorContext);
+  if (!method) return null;
+  let label = cleanMethodLabel(method);
+  if (hordeSize && /^horde/i.test(label)) {
+    label = `${label} (x${hordeSize})`;
+  }
+  const m = methodKey(label);
+  const raw = m.replace(/[^a-z]+/g, ' ');
+  const base = /\blure\b/.test(raw)
+    ? 'lure'
+    : /\bhorde\b/.test(raw)
+    ? 'horde'
+    : (methodColors[m] ? m : m.replace(/\s*\(.*\)$/,''));
+  const bg = base === 'lure'
+    ? (rarityColors[base] || '#7f8c8d')
+    : (methodColors[base] || '#7f8c8d');
+  return (
+    <span style={{
+      display:'inline-block', padding:'2px 8px', fontSize:compact?11:12, borderRadius:999,
+      color:'#111', background:bg, fontWeight:800, border:'1px solid #00000022'
+    }}>
+      {label}
+    </span>
+  );
+}
+
+/* ---- Rarity palette ---- */
+function rarityKey(r=''){ return String(r).toLowerCase().trim(); }
+const RARITY_ORDER = ['very common','common','uncommon','rare','very rare'];
+
+function selectRarest(rarities = []) {
+  const unique = [...new Set(rarities)];
+  const known = unique.filter(r => RARITY_ORDER.includes(rarityKey(r)));
+  if (known.length > 1) {
+    const rarest = known.reduce((a, b) =>
+      RARITY_ORDER.indexOf(rarityKey(b)) > RARITY_ORDER.indexOf(rarityKey(a)) ? b : a
+    );
+    const others = unique.filter(r => !known.includes(r));
+    return [rarest, ...others];
+    }
+  return unique;
+}
+function RarityPill({ rarity, compact=false, hordeSize }){
+  const { rarityColors } = React.useContext(ColorContext);
+  if (!rarity) return null;
+  const k = rarityKey(rarity);
+  const isPercent = /^\d+%$/.test(k);
+  const bg = isPercent ? '#13B5A6' : (rarityColors[k] || '#BDC3C7');
+  const color = '#111';
+  let label = rarity;
+  if (hordeSize && /^horde/i.test(rarity)) {
+    label = `Horde (x${hordeSize})`;
+  }
+  return (
+    <span style={{
+      display:'inline-block', padding:'2px 8px', fontSize:compact?11:12, borderRadius:999,
+      color, background:bg, fontWeight:800, border:'1px solid #00000022'
+    }}>
+      {label}
+    </span>
+  );
+}
+
+function LevelPill({ min, max, compact=false }){
+  const { rarityColors } = useContext(ColorContext);
+  const hasMin = min != null;
+  const hasMax = max != null;
+  if (!hasMin && !hasMax) return null;
+  const label = hasMin && hasMax
+    ? (min === max ? `Lv. ${min}` : `Lv. ${min}-${max}`)
+    : `Lv. ${hasMin ? min : max}`;
+  const bg = rarityColors['level'] || '#9e50aaff';
+  return (
+    <span style={{
+      display:'inline-block', padding:'2px 8px', fontSize:compact?11:12, borderRadius:999,
+      color:'#111', background:bg, fontWeight:800, border:'1px solid #00000022'
+    }}>
+      {label}
+    </span>
+  );
+}
+
+function ItemPill({ item, compact=false }){
+  const { rarityColors } = useContext(ColorContext);
+  if (!item) return null;
+  const bg = rarityColors['held item'] || '#F8E473';
+  return (
+    <span style={{
+      display:'inline-block', padding:'2px 8px', fontSize:compact?11:12, borderRadius:999,
+      color:'#111', background:bg, fontWeight:800, border:'1px solid #00000022'
+    }}>
+      {item}
+    </span>
+  );
+}
+
+function PokeballIcon({ filled=false, size=20 }){
+  const stroke = filled ? '#000' : '#bbb';
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="15" fill={filled ? '#fff' : 'none'} stroke={stroke} strokeWidth="2" />
+      {filled && <path d="M16 1a15 15 0 0 1 15 15H1A15 15 0 0 1 16 1z" fill="#e53e3e" />}
+      <path d="M1 16h30" stroke={stroke} strokeWidth="2" />
+      <circle cx="16" cy="16" r="5" fill={filled ? '#fff' : 'none'} stroke={stroke} strokeWidth="2" />
+    </svg>
+  );
+}
+
+function AreaMonCard({
+  mon,
+  monName,
+  encounters,
+  onView,
+  caught=false,
+  onToggleCaught,
+  showCaught=true,
+  showEv=true,
+  showCatchRate=true,
+  showCatchPercent=true,
+  showHeldItem=true,
+  showLevel=true
+}){
+  const cardStyle = {
+    ...styles.monCard,
+    opacity: showCaught ? (caught ? 0.4 : 1) : 1,
+    cursor: mon && onView ? 'pointer' : 'default'
+  };
+  const compact = encounters.length > 1;
+  const scrollRef = useRef(null);
+  const [showLeftArrow, setShowLeftArrow] = useState(false);
+  const [showRightArrow, setShowRightArrow] = useState(false);
+  const [hasOverflow, setHasOverflow] = useState(false);
+  const wrapStyle = {
+    ...styles.encWrap,
+    justifyContent: hasOverflow ? 'flex-start' : 'center'
+  };
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const update = () => {
+      setShowLeftArrow(el.scrollLeft > 0);
+      setShowRightArrow(el.scrollLeft + el.clientWidth < el.scrollWidth);
+      setHasOverflow(el.scrollWidth > el.clientWidth);
+    };
+    update();
+    el.addEventListener('scroll', update);
+    window.addEventListener('resize', update);
+    return () => {
+      el.removeEventListener('scroll', update);
+      window.removeEventListener('resize', update);
+    };
+  }, [encounters]);
+  const scroll = (dir) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const step = el.clientWidth * 0.8;
+    el.scrollBy({ left: dir * step, behavior:'smooth' });
+  };
+  const handleClick = () => {
+    if (mon && onView) onView(mon);
+  };
+  const evLabel = (() => {
+    if (!mon || !showEv) return null;
+    const evMap = {
+      ev_hp: 'HP',
+      ev_attack: 'Atk',
+      ev_defense: 'Def',
+      ev_sp_attack: 'SpA',
+      ev_sp_defense: 'SpD',
+      ev_speed: 'Spe'
+    };
+    const yields = mon.yields || {};
+    const parts = Object.entries(evMap)
+      .filter(([k]) => (yields[k] || 0) > 0)
+      .map(([k, label]) => `${yields[k]} ${label}`);
+    if (!parts.length) return null;
+    if (parts.length > 1) {
+      return `EV- ${parts[0]}\n${parts.slice(1).join('\n')}`;
+    }
+    return `EV- ${parts[0]}`;
+  })();
+  const catchRate = mon?.catchRate ?? catchRates[mon?.id];
+  const catchRateLabel = (catchRate != null && showCatchRate)
+    ? `CR- ${catchRate}`
+    : null;
+  const catchPercentLabel = (catchRate != null && showCatchPercent)
+    ? `%- ${(calcCatchChance(catchRate) * 100).toFixed(1)}`
+    : null;
+  const infoChips = [evLabel, catchRateLabel, catchPercentLabel].filter(Boolean);
+  return (
+    <div style={cardStyle} onClick={handleClick}>
+      {infoChips.length > 0 && (
+        <div
+          style={{
+            position:'absolute', top:6, left:6,
+            display:'flex', flexDirection:'column', gap:4,
+            alignItems:'flex-start'
+          }}
+        >
+          {infoChips.map((txt, i) => (
+            <span
+              key={i}
+              style={{
+                display:'inline-block', padding:'2px 8px', fontSize:11,
+                borderRadius:999, color:'var(--text)', background:'var(--surface)',
+                border:'1px solid var(--divider)', fontWeight:700,
+                whiteSpace:'pre-line'
+              }}
+            >
+              {txt}
+            </span>
+          ))}
+        </div>
+      )}
+      {showCaught && (
+        <button
+          onClick={e => { e.stopPropagation(); onToggleCaught && onToggleCaught(); }}
+          title={caught ? 'Mark as uncaught' : 'Mark as caught'}
+          style={{ position:'absolute', top:6, right:6, background:'transparent', border:'none', cursor:'pointer', padding:0, fontSize:0 }}
+        >
+          <PokeballIcon filled={caught} size={30} />
+        </button>
+      )}
+      <div style={{ fontWeight:700 }}>{monName}</div>
+      <Sprite mon={mon} size={80} alt={monName} />
+      <div style={{ position:'relative', width:'100%', overflow:'hidden' }}>
+        <div ref={scrollRef} className="encounter-scroll" style={wrapStyle}>
+          {encounters.map((enc, idx) => (
+            <div key={idx} style={styles.encCol}>
+              {enc.method && <MethodPill method={enc.method} compact={compact} hordeSize={enc.hordeSize} />}
+              {!/lure/i.test(enc.method || '') &&
+                enc.rarities.map(r => (
+                  <RarityPill key={`r-${idx}-${r}`} rarity={r} compact={compact} hordeSize={enc.hordeSize} />
+                ))}
+              {showLevel && <LevelPill min={enc.min} max={enc.max} compact={compact} />}
+              {showHeldItem && enc.items.map(i => <ItemPill key={`i-${idx}-${i}`} item={i} compact={compact} />)}
+            </div>
+          ))}
+        </div>
+        {showLeftArrow && (
+          <button
+            onClick={e => { e.stopPropagation(); scroll(-1); }}
+            style={{
+              position:'absolute',
+              top:'50%',
+              left:0,
+              transform:'translateY(-50%)',
+              background:'var(--card)',
+              border:'1px solid var(--divider)',
+              color:'var(--text)',
+              cursor:'pointer',
+              borderRadius:'50%',
+              width:24,
+              height:24,
+              display:'flex',
+              alignItems:'center',
+              justifyContent:'center',
+              boxShadow:'0 0 4px rgba(0,0,0,0.5)'
+            }}
+            aria-label="Scroll left"
+          >
+            ?
+          </button>
+        )}
+        {showRightArrow && (
+          <button
+            onClick={e => { e.stopPropagation(); scroll(1); }}
+            style={{
+              position:'absolute',
+              top:'50%',
+              right:0,
+              transform:'translateY(-50%)',
+              background:'var(--card)',
+              border:'1px solid var(--divider)',
+              color:'var(--text)',
+              cursor:'pointer',
+              borderRadius:'50%',
+              width:24,
+              height:24,
+              display:'flex',
+              alignItems:'center',
+              justifyContent:'center',
+              boxShadow:'0 0 4px rgba(0,0,0,0.5)'
+            }}
+            aria-label="Scroll right"
+          >
+            ?
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Move data & tables ---------- */
+
+const CATEGORY_COLORS = {
+  physical:'#C92112',
+  special:'#1976D2',
+  status:'#A0A0A0'
+};
+function CategoryPill({ cat }){
+  const key = String(cat || '').toLowerCase();
+  if(!key) return null;
+  const bg = CATEGORY_COLORS[key] || '#555';
+  return (
+    <span style={{display:'inline-block', padding:'2px 8px', fontSize:12, borderRadius:999,
+      fontWeight:800, color:'#fff', background:bg, textTransform:'capitalize'}}>{key}</span>
+  );
+}
+
+const MOVE_CACHE = new Map();
+const MOVE_SLUG_EXCEPTIONS = new Map([
+  ['smokescreen', 'smokescreen']
+]);
+function moveSlug(name=''){
+  const trimmed = String(name || '').trim();
+  if(!trimmed) return '';
+  const normalized = trimmed.toLowerCase().replace(/[^a-z0-9]+/g,'');
+  const exception = MOVE_SLUG_EXCEPTIONS.get(normalized);
+  if(exception) return exception;
+  const withDelimiters = trimmed
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1-$2');
+  return withDelimiters.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
+}
+
+function mapMoveResponse(json) {
+  if (!json || typeof json !== 'object') return null;
+  const entries = Array.isArray(json.effect_entries) ? json.effect_entries : [];
+  const english = entries.find(entry => entry?.language?.name === 'en') || entries[0];
+  let shortEffect = english?.short_effect || english?.effect || null;
+  if (shortEffect && typeof json.effect_chance === 'number') {
+    shortEffect = shortEffect.replace(/\$effect_chance/g, String(json.effect_chance));
+  }
+  if (shortEffect) {
+    shortEffect = shortEffect.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  return {
+    type: json?.type?.name,
+    category: json?.damage_class?.name,
+    power: json?.power,
+    accuracy: json?.accuracy,
+    shortEffect: shortEffect || null,
+  };
+}
+function useMoveData(name){
+  const slug = moveSlug(name);
+  const [data,setData] = useState(() => MOVE_CACHE.get(slug));
+  useEffect(() => {
+    let alive = true;
+    if(!slug) return;
+    const cached = MOVE_CACHE.get(slug);
+    if(cached){
+      setData(cached);
+      return;
+    }
+    (async () => {
+      try{
+        const res = await fetch(`https://pokeapi.co/api/v2/move/${slug}`);
+        const json = await res.json();
+        const info = mapMoveResponse(json);
+        MOVE_CACHE.set(slug, info);
+        if(alive) setData(info);
+      }catch(e){
+        MOVE_CACHE.set(slug, null);
+        if(alive) setData(null);
+      }
+    })();
+    return () => { alive = false; };
+  }, [slug]);
+  return data || null;
+}
+
+const moveCell = { padding:'2px 4px', border:'1px solid var(--divider)' };
+
+function formatMoveLabel(name=''){
+  if (!name) return '';
+  return String(name)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+    .trim();
+}
+
+function MoveRow({ mv, showLevel=false }){
+  const name = typeof mv === 'string' ? mv : mv.move;
+  const level = typeof mv === 'string' ? null : mv.level;
+  const slug = moveSlug(name);
+  const data = useMoveData(name);
+  const shortEffect = data?.shortEffect;
+  const hasSlug = Boolean(slug);
+  const tooltipContent = shortEffect || (hasSlug ? (MOVE_CACHE.has(slug) ? 'No short effect available.' : 'Loading move info...') : null);
+  const displayName = formatMoveLabel(name);
+  const cursorStyle = hasSlug ? 'help' : 'default';
+  return (
+    <tr>
+      {showLevel && (
+        <td style={{ ...moveCell, textAlign:'center' }}>{level ?? '-'}</td>
+      )}
+      <td style={{ ...moveCell, textAlign:'left' }}>
+        <DelayedTooltip delay={500} content={tooltipContent}>
+          <span
+            style={{ cursor: cursorStyle, display:'inline-flex', alignItems:'center' }}
+            aria-label={tooltipContent || undefined}
+          >
+            {displayName}
+          </span>
+        </DelayedTooltip>
+      </td>
+      <td style={{ ...moveCell, textAlign:'center' }}>
+        {data?.type ? <TypePill t={data.type} compact /> : '\u2014'}
+      </td>
+      <td style={{ ...moveCell, textAlign:'center' }}>
+        {data?.category ? <CategoryPill cat={data.category} /> : '\u2014'}
+      </td>
+      <td style={{ ...moveCell, textAlign:'center' }}>{data?.power ?? '\u2014'}</td>
+      <td style={{ ...moveCell, textAlign:'center' }}>{data?.accuracy ?? '\u2014'}</td>
+    </tr>
+  );
+}
+
+function MovesTable({ title, moves = [], showLevel = false }) {
+  const [sort, setSort] = useState({ key: null, dir: 1 });
+  const [refresh, setRefresh] = useState(0);
+
+  // Reset sort when the move list changes
+  useEffect(() => {
+    setSort({ key: null, dir: 1 });
+  }, [moves]);
+
+  // Preload move data so sorting by type/power/etc. works immediately
+  useEffect(() => {
+    let alive = true;
+    const names = Array.from(new Set(moves.map(m => (typeof m === 'string' ? m : m.move))));
+    (async () => {
+      for (const name of names) {
+        const slug = moveSlug(name);
+        if (!slug || MOVE_CACHE.has(slug)) continue;
+        try {
+          const res = await fetch(`https://pokeapi.co/api/v2/move/${slug}`);
+          const json = await res.json();
+          const info = mapMoveResponse(json);
+          MOVE_CACHE.set(slug, info);
+        } catch (e) {}
+      }
+      if (alive) setRefresh(r => r + 1);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [moves]);
+
+  const sorted = useMemo(() => {
+    const arr = [...moves];
+    if (!sort.key) return arr;
+    const dir = sort.dir;
+    const getName = mv => (typeof mv === 'string' ? mv : mv.move);
+    const getLevel = mv => (typeof mv === 'string' ? null : mv.level);
+    const getData = mv => MOVE_CACHE.get(moveSlug(getName(mv))) || {};
+    return arr.sort((a, b) => {
+      const nameA = getName(a);
+      const nameB = getName(b);
+      const dataA = getData(a);
+      const dataB = getData(b);
+      switch (sort.key) {
+        case 'name':
+          return nameA.localeCompare(nameB) * dir;
+        case 'type': {
+          const t = (dataA.type || '').localeCompare(dataB.type || '');
+          return t ? t * dir : nameA.localeCompare(nameB);
+        }
+        case 'cat': {
+          const c = (dataA.category || '').localeCompare(dataB.category || '');
+          return c ? c * dir : nameA.localeCompare(nameB);
+        }
+        case 'power': {
+          const pa = dataA.power;
+          const pb = dataB.power;
+          const psa = pa ?? (dir === -1 ? -Infinity : Infinity);
+          const psb = pb ?? (dir === -1 ? -Infinity : Infinity);
+          const diff = psa - psb;
+          return diff ? diff * dir : nameA.localeCompare(nameB);
+        }
+        case 'acc': {
+          const aa = dataA.accuracy;
+          const ab = dataB.accuracy;
+          const asa = aa ?? (dir === -1 ? -Infinity : Infinity);
+          const asb = ab ?? (dir === -1 ? -Infinity : Infinity);
+          const diff = asa - asb;
+          return diff ? diff * dir : nameA.localeCompare(nameB);
+        }
+        case 'lv': {
+          const la = getLevel(a) ?? (dir === 1 ? Infinity : -Infinity);
+          const lb = getLevel(b) ?? (dir === 1 ? Infinity : -Infinity);
+          const diff = la - lb;
+          return diff ? diff * dir : nameA.localeCompare(nameB);
+        }
+        default:
+          return 0;
+      }
+    });
+  }, [moves, sort, refresh]);
+
+  const handleSort = key => {
+    setSort(prev => {
+      if (prev.key === key) {
+        return { key, dir: -prev.dir };
+      }
+      const dir = key === 'power' || key === 'acc' ? -1 : 1;
+      return { key, dir };
+    });
+  };
+
+  // Use proper Unicode arrows for sort indicators (up/down)
+  const sortArrow = key => (sort.key === key ? (sort.dir === 1 ? '\u25B2' : '\u25BC') : '');
+
+  return (
+    <div style={{ border: '1px solid var(--divider)', borderRadius: 8, padding: '8px 10px', background: 'var(--surface)' }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>{title}</div>
+      {sorted.length ? (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, tableLayout: 'fixed' }}>
+          <colgroup>
+            {showLevel && <col style={{ width: '40px' }} />}
+            <col />
+            <col style={{ width: '80px' }} />
+            <col style={{ width: '80px' }} />
+            <col style={{ width: '50px' }} />
+            <col style={{ width: '50px' }} />
+          </colgroup>
+          <thead>
+            <tr>
+              {showLevel && (
+                <th
+                  style={{ ...moveCell, textAlign: 'center', cursor: 'pointer' }}
+                  onClick={() => handleSort('lv')}
+                >
+                  Lv {sortArrow('lv')}
+                </th>
+              )}
+              <th
+                style={{ ...moveCell, textAlign: 'left', cursor: 'pointer' }}
+                onClick={() => handleSort('name')}
+              >
+                Move {sortArrow('name')}
+              </th>
+              <th
+                style={{ ...moveCell, textAlign: 'center', cursor: 'pointer' }}
+                onClick={() => handleSort('type')}
+              >
+                Type {sortArrow('type')}
+              </th>
+              <th
+                style={{ ...moveCell, textAlign: 'center', cursor: 'pointer' }}
+                onClick={() => handleSort('cat')}
+              >
+                Cat {sortArrow('cat')}
+              </th>
+              <th
+                style={{ ...moveCell, textAlign: 'center', cursor: 'pointer' }}
+                onClick={() => handleSort('power')}
+              >
+                Pwr {sortArrow('power')}
+              </th>
+              <th
+                style={{ ...moveCell, textAlign: 'center', cursor: 'pointer' }}
+                onClick={() => handleSort('acc')}
+              >
+                Acc {sortArrow('acc')}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((mv) => {
+              const baseKey = typeof mv === 'string'
+                ? moveSlug(mv)
+                : `${moveSlug(mv.move)}-${mv.level ?? ''}`;
+              const key = `${baseKey}-${moves.indexOf(mv)}`;
+              return <MoveRow key={key} mv={mv} showLevel={showLevel} />;
+            })}
+          </tbody>
+        </table>
+      ) : (
+        <div className="label-muted">None</div>
+      )}
+    </div>
+  );
+}
+
+function EvolutionChain({ mon, onSelect }) {
+  const base = React.useMemo(() => {
+    if (!mon) return null;
+    let cur = mon;
+    while (EVO_PARENTS.get(cur.id)?.length) {
+      const parentId = EVO_PARENTS.get(cur.id)[0];
+      const parent = getMonByDex(parentId);
+      if (!parent) break;
+      cur = parent;
+    }
+    return cur;
+  }, [mon]);
+
+  const renderMon = (m, isFormDisplay = false) => {
+    if (!m) return null;
+    // For forms, check if the name matches (since forms might not have IDs)
+    const isSelected = isFormDisplay
+      ? !!(mon && m && normalizeKey(m.name) === normalizeKey(mon.name))
+      : !!(mon && m && m.id === mon.id);
+    const canSelect = !!(onSelect && !isSelected);
+    const handleSelect = () => {
+      if (onSelect) onSelect(m);
+    };
+    const handleKeyDown = (evt) => {
+      if (evt.key === 'Enter' || evt.key === ' ') {
+        evt.preventDefault();
+        handleSelect();
+      }
+    };
+    return (
+      <div style={{ display:'flex', alignItems:'center', gap:16 }}>
+        <div style={{ textAlign:'center' }}>
+          <div
+            style={{
+              display:'inline-block',
+              padding:2,
+              border: isSelected ? '2px solid var(--accent)' : '2px solid transparent',
+              cursor: canSelect ? 'pointer' : 'default',
+            }}
+            role={canSelect ? 'button' : undefined}
+            tabIndex={canSelect ? 0 : undefined}
+            onClick={canSelect ? handleSelect : undefined}
+            onKeyDown={canSelect ? handleKeyDown : undefined}
+          >
+            <Sprite mon={m} size={72} alt={m.name} />
+          </div>
+          <div className="label-muted">#{m.id ? String(m.id).padStart(3,'0') : '--'}</div>
+          {isSelected ? (
+            <span style={{ color:'var(--accent)', fontWeight:700 }}>
+              {titleCase(m.name)}
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="link-btn"
+              style={{ background:'none', border:0, padding:0, color:'var(--accent)', fontWeight:700, cursor:'pointer' }}
+              onClick={handleSelect}
+            >
+              {titleCase(m.name)}
+            </button>
+          )}
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:'center', marginTop:4 }}>
+            {(m.types || []).map(t => <TypePill key={t} t={t} compact />)}
+          </div>
+        </div>
+        {Array.isArray(m.evolutions) && m.evolutions.length > 0 && (
+          <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+            {m.evolutions.map((evo) => {
+              const child = getMonByDex(evo.id);
+
+              const rawType = String(evo.type || '').toLowerCase();
+              const locationMap = {
+                level_location_1: 'Lv. Up Near A Special Magnetic Field',
+                level_location_2: 'Lv. Up Near A Moss Rock',
+                level_location_3: 'Lv. Up Near An Ice Rock',
+              };
+              const isLevelLocation = Object.prototype.hasOwnProperty.call(locationMap, rawType);
+              const typeLabel = rawType.replace(/_/g, ' ');
+              let label = isLevelLocation ? locationMap[rawType] : titleCase(typeLabel);
+
+              const needsItem = rawType.includes('item');
+              const isTrade = rawType.startsWith('trade');
+              let val = null;
+              let itemId = null;
+              if (!isLevelLocation) {
+                if (evo.item_name) {
+                  val = evo.item_name;
+                  const found = ITEM_INDEX.byName.get(normalizeKey(evo.item_name));
+                  if (found?.id != null) itemId = found.id;
+                } else if (needsItem && typeof evo.val === 'number' && ITEM_INDEX.byId.has(evo.val)) {
+                  val = ITEM_INDEX.byId.get(evo.val)?.name;
+                  itemId = evo.val;
+                } else if (evo.val != null) {
+                  val = evo.val;
+                }
+              }
+
+              if (rawType === 'level_with_monster' && typeof evo.val === 'number') {
+                const partner = getMonByDex(evo.val);
+                if (partner) {
+                  label = `Level up with ${titleCase(partner.name)}`;
+                  val = null;
+                }
+              }
+
+              if (rawType === 'level_with_skill' && typeof evo.val === 'number') {
+                const move = MOVES_INDEX.byId.get(evo.val);
+                if (move) {
+                  label = `Level up knowing ${move.name}`;
+                  val = null;
+                }
+              }
+
+              if (
+                rawType === 'happiness' ||
+                rawType === 'happiness_day' ||
+                rawType === 'happiness_night'
+              ) {
+                label = 'Evolve with Happiness';
+                if (rawType === 'happiness_day') label += ': Day';
+                if (rawType === 'happiness_night') label += ': Night';
+                val = null;
+              }
+
+              // Clean up bogus trade values like "0:" so it renders as plain "Trade"
+              if (isTrade) {
+                const sval = String(val ?? '').trim();
+                if (!sval || /^0:?$/.test(sval)) {
+                  val = null;
+                }
+              }
+
+              if (val != null) {
+                    if (/with item$/i.test(label) && (evo.item_name || (needsItem && ITEM_INDEX.byId.has(evo.val)))) {
+                      label = `${label.replace(/ item$/i, '')} ${val}`;
+                   } else {
+                      label = `${label}: ${val}`;
+                   }
+                 }
+
+          return (
+                <div key={evo.id} style={{ display:'flex', alignItems:'center', gap:16 }}>
+                  <div style={{ textAlign:'center', fontSize:12, display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
+                    {itemId != null && (
+                      <img
+                        src={`${ITEM_ICON_BASE}${itemId}.png`}
+                        alt={String(val || 'Item')}
+                        style={{ width:22, height:22, imageRendering:'pixelated' }}
+                        onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = ITEM_PLACEHOLDER; e.currentTarget.style.imageRendering = 'auto'; }}
+                      />
+                    )}
+                    <div style={{ fontSize:24 }}>{"\u2192"}</div>
+                    <div className="label-muted">{label}</div>
+                  </div>
+                  {renderMon(child)}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  if (!base) return null;
+  const hasChain = base.id !== mon.id || (base.evolutions || []).length > 0;
+
+  // Find the true base form if current mon is an alternate form
+  let formsSource = base;
+  if (mon?.name) {
+    // Check if current mon is an alternate form by checking if any Pokemon has this as a form
+    const monNameKey = normalizeKey(mon.name);
+    const trueBase = DEX_LIST.find(p =>
+      Array.isArray(p.forms) && p.forms.some(f => normalizeKey(f.name) === monNameKey)
+    );
+    if (trueBase) {
+      formsSource = trueBase;
+    }
+  }
+
+  const hasForms = Array.isArray(formsSource.forms) && formsSource.forms.length > 0;
+
+  // Determine the title based on what's available
+  let title = 'Evolution';
+  if (hasForms && hasChain) {
+    title = 'Evolution / Forms';
+  } else if (hasForms && !hasChain) {
+    title = 'Forms';
+  }
+
+  return (
+    <div style={{ margin:'16px 0 6px' }}>
+      <div className="label-muted" style={{ fontWeight:700, marginBottom:8 }}>{title}</div>
+      {!hasChain && !hasForms ? (
+        <div className="label-muted">This Pokemon does not Evolve</div>
+      ) : (
+        <>
+          {hasChain && renderMon(base)}
+          {hasForms && (
+            <div style={{ marginTop: hasChain ? 16 : 0 }}>
+              {hasChain && <div className="label-muted" style={{ fontWeight:700, marginBottom:8, marginTop:16 }}>Forms</div>}
+              <div style={{ display:'flex', flexWrap:'wrap', gap:16 }}>
+                {/* Show the base form first */}
+                {renderMon(formsSource, true)}
+                {/* Then show all the other forms */}
+                {formsSource.forms.map((form, idx) => (
+                  <div key={`form-${idx}`}>
+                    {renderMon(form, true)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Defense chart ---------- */
+const TYPE_CHART = {
+  normal:{ weak:['fighting'], res:[], imm:['ghost'] },
+  fire:{ weak:['water','ground','rock'], res:['fire','grass','ice','bug','steel'], imm:[] },
+  water:{ weak:['electric','grass'], res:['fire','water','ice','steel'], imm:[] },
+  electric:{ weak:['ground'], res:['electric','flying','steel'], imm:[] },
+  grass:{ weak:['fire','ice','poison','flying','bug'], res:['water','electric','grass','ground'], imm:[] },
+  ice:{ weak:['fire','fighting','rock','steel'], res:['ice'], imm:[] },
+  fighting:{ weak:['flying','psychic'], res:['bug','rock','dark'], imm:[] },
+  poison:{ weak:['ground','psychic'], res:['grass','fighting','poison','bug'], imm:[] },
+  ground:{ weak:['water','grass','ice'], res:['poison','rock'], imm:['electric'] },
+  flying:{ weak:['electric','ice','rock'], res:['grass','fighting','bug'], imm:['ground'] },
+  psychic:{ weak:['bug','ghost','dark'], res:['fighting','psychic'], imm:[] },
+  bug:{ weak:['fire','flying','rock'], res:['grass','fighting','ground'], imm:[] },
+  rock:{ weak:['water','grass','fighting','ground','steel'], res:['normal','fire','poison','flying'], imm:[] },
+  ghost:{ weak:['ghost','dark'], res:['poison','bug'], imm:['normal','fighting'] },
+  dragon:{ weak:['ice','dragon'], res:['fire','water','electric','grass'], imm:[] },
+  dark:{ weak:['fighting','bug'], res:['ghost','dark'], imm:['psychic'] },
+  steel:{ weak:['fire','fighting','ground'], res:['normal','grass','ice','flying','psychic','bug','rock','dragon','steel'], imm:['poison'] }
+};
+function computeWeakness(types = []){
+  const tlist = (Array.isArray(types) ? types : []).map(normalizeType).filter(Boolean);
+  const mult = {};
+  for (const atk of Object.keys(TYPE_CHART)) mult[atk] = 1;
+  for (const def of tlist){
+    const d = TYPE_CHART[def]; if (!d) continue;
+    d.weak.forEach(t => { mult[t] *= 2; });
+    d.res.forEach(t => { mult[t] *= 0.5; });
+    d.imm.forEach(t => { mult[t] *= 0; });
+  }
+  const asType = (n) => Object.entries(mult).filter(([,m]) => m===n).map(([t]) => titleCase(t));
+  return { x4: asType(4), x2: asType(2), x0_5: asType(0.5), x0_25: asType(0.25), x0: asType(0) };
+}
+
+/* ---------- Loaders ---------- */
+function useLocationsDb(){
+  return useMemo(() => {
+    const idx = {};
+    for (const mon of DEX_LIST) {
+      const key = normalizeKey(mon.name);
+      const locations = [];
+      const seen = new Set();
+      for (const l of mon.locations || []) {
+        let method = l.type;
+        let rarity = l.rarity;
+        // Some "Lure" encounters are stored as a rarity rather than a method.
+        // Promote those to a proper method so encounter-type filters work.
+        if (rarity && /lure/i.test(rarity)) {
+          method = `Lure${method ? ` (${method})` : ''}`;
+          rarity = '';
+        }
+        // Any encounter whose method is Lure should have no rarity
+        if (method && /lure/i.test(method)) {
+          rarity = '';
+        }
+        const map = stripSeason(l.location);
+        const dedupeKey = [l.region_name, map, method || '', rarity || '', l.min_level ?? '', l.max_level ?? ''].join('|');
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        locations.push({
+          region: l.region_name,
+          map,
+          method,
+          rarity,
+          min_level: l.min_level,
+          max_level: l.max_level,
+          items: (mon.heldItems || []).map(h => h.name)
+        });
+      }
+      idx[key] = { locations };
+    }
+    return idx;
+  }, []);
+}
+
+/** Cleaning helpers for Areas */
+/** NOTE: now balances missing ')' */
+function cleanAreaMethod(method=''){
+  return cleanMethodLabel(method);
+}
+
+/** Sanitize Areas index once at load */
+function useAreasDbCleaned(){
+  return useMemo(() => {
+    const out = {};
+    for (const mon of DEX_LIST) {
+      const items = (mon.heldItems || []).map(h => h.name);
+      const seen = new Set();
+      for (const loc of mon.locations || []) {
+        const region = loc.region_name || 'Unknown';
+        const mapName = stripSeason(loc.location);
+        if (!mapName) continue;
+        let method = cleanAreaMethod(loc.type || '');
+        let rarity = loc.rarity || '';
+        // Handle lure encounters represented as rarities in source data
+        if (rarity && /lure/i.test(rarity)) {
+          method = cleanAreaMethod(`Lure${method ? ` (${method})` : ''}`);
+          rarity = '';
+        }
+        // Any encounter whose method is Lure should have no rarity
+        if (method && /lure/i.test(method)) {
+          rarity = '';
+        }
+        const key = [region, mapName, method, rarity, loc.min_level ?? '', loc.max_level ?? ''].join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const entry = {
+          monId: mon.id,
+          monName: mon.name,
+          method,
+          rarity,
+          min: loc.min_level,
+          max: loc.max_level,
+          items,
+        };
+        const hSize = getHordeSize(region, mapName, mon.name);
+        if (hSize) entry.hordeSize = hSize;
+        if (!out[region]) out[region] = {};
+        if (!out[region][mapName]) out[region][mapName] = [];
+        out[region][mapName].push(entry);
+      }
+    }
+    return out;
+  }, []);
+}
+
+function useTmLocations(){
+  const [index, setIndex] = useState({});
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(TM_URL, { cache:'no-store' });
+        const json = await res.json();
+        if (alive) setIndex(json || {});
+      } catch (e) {
+        console.error('load tm locations failed', e);
+        if (alive) setIndex({});
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+  return index;
+}
+
+/** Group same Pokemon (per map) into one entry with multiple methods/rarities */
+function groupEntriesByMon(entries){
+  const byId = new Map();
+
+  const splitMethod = (m='') => {
+    const clean = cleanMethodLabel(m);
+    const match = clean.match(/^(.*?)(?:\s*\(([^()]+)\))?$/);
+    const base = match ? match[1].trim() : clean;
+    const time = match && match[2] ? normalizeTimeTag(match[2]) : '';
+    return { base, time };
+  };
+
+  const mergeEnc = (into, from) => {
+    from.rarities.forEach(r => into.rarities.add(r));
+    if (from.min != null) into.min = into.min==null ? from.min : Math.min(into.min, from.min);
+    if (from.max != null) into.max = into.max==null ? from.max : Math.max(into.max, from.max);
+    from.items.forEach(i => into.items.add(i));
+    if (from.hordeSize != null && into.hordeSize == null) into.hordeSize = from.hordeSize;
+  };
+
+  for (const e of entries){
+    if (!byId.has(e.monId)){
+      byId.set(e.monId, { monId:e.monId, monName:e.monName, methods:new Map() });
+    }
+    const g = byId.get(e.monId);
+    const { base, time } = splitMethod(e.method);
+    const key = base.toLowerCase();
+    if (!g.methods.has(key)) g.methods.set(key, new Map());
+    const timeMap = g.methods.get(key);
+    const tKey = time || '';
+    if (!timeMap.has(tKey)){
+      timeMap.set(tKey, { method: base, time, rarities:new Set(), min:e.min, max:e.max, items:new Set(e.items || []), hordeSize:e.hordeSize });
+    }
+    const enc = timeMap.get(tKey);
+    if (e.rarity) enc.rarities.add(e.rarity);
+    if (e.min != null) enc.min = enc.min==null ? e.min : Math.min(enc.min, e.min);
+    if (e.max != null) enc.max = enc.max==null ? e.max : Math.max(enc.max, e.max);
+    if (Array.isArray(e.items)) e.items.forEach(i => enc.items.add(i));
+    if (e.hordeSize != null && enc.hordeSize == null) enc.hordeSize = e.hordeSize;
+  }
+
+  return [...byId.values()].map(g => {
+    const encounters = [];
+    for (const timeMap of g.methods.values()) {
+      const baseEnc = timeMap.get('');
+      if (baseEnc && timeMap.size > 1) {
+        for (const [tKey, enc] of timeMap) {
+          if (tKey === '') continue;
+          mergeEnc(enc, baseEnc);
+        }
+        timeMap.delete('');
+      }
+      const encs = [...timeMap.values()];
+      if (encs.length > 1) {
+        const combo = { method: encs[0].method, timeSet: new Set(), rarities: new Set(), min:null, max:null, items:new Set() };
+        for (const enc of encs) {
+          if (enc.time) combo.timeSet.add(enc.time);
+          mergeEnc(combo, enc);
+        }
+        const label = `${combo.method} (${[...combo.timeSet].join('/')})`;
+        encounters.push({
+          method: label,
+          rarities: selectRarest([...combo.rarities]),
+          min: combo.min,
+          max: combo.max,
+          items: [...combo.items],
+          hordeSize: combo.hordeSize
+        });
+      } else {
+        for (const enc of encs) {
+          const label = enc.time ? `${enc.method} (${enc.time})` : enc.method;
+          encounters.push({
+            method: label,
+            rarities: selectRarest([...enc.rarities]),
+            min: enc.min,
+            max: enc.max,
+            items: [...enc.items],
+            hordeSize: enc.hordeSize
+          });
+        }
+      }
+    }
+    return { monId:g.monId, monName:g.monName, encounters };
+  });
+}
+
+/* Normalize map names for grouping (Sinnoh Victory Road unification & split routes) */
+function normalizeMapForGrouping(region, mapName){
+  const r = String(region).toLowerCase().trim();
+  let m = String(mapName).trim();
+
+  // Additional normalization for mis-encoded "Pok�mon" variants
+  // e.g., "POK\u00C3\u00A9MON" (POKéMON), "Pok\u00C3\u00A9mon" (Pokémon)
+  m = m
+    .replace(/POK\u00C3\u00A9MON/gi, 'Pokemon')
+    .replace(/Pok\u00C3\u00A9mon/gi, 'Pokemon');
+
+  // Standardize casing for common maps
+  m = m
+    .replace(/^Pokemon\s+Mansion\b/i, 'Pokemon Mansion')
+    .replace(/^Pokemon\s+Tower\b/i, 'Pokemon Tower');
+
+  // Normalize mis-encoded/diacritic variants of "Pokemon"
+  // Examples: "Pok�mon", "POKéMON" ? "Pokemon"
+  m = m
+    .replace(/Pok(?:e|\u00e9|\u00c9)mon/gi, 'Pokemon')
+    .replace(/POKéMON/gi, 'Pokemon')
+    .replace(/Pokémon/gi, 'Pokemon');
+
+  // Merge halves like "Route 212 (North)" / "(South)" -> "Route 212"
+  if (/^route\s*\d+\b/i.test(m)) {
+    m = m.replace(/\s*\((north|south|east|west)\)\s*/i, '').trim();
+  }
+
+  if (r === 'sinnoh' && /victory\s*road/i.test(m)) {
+    return 'Victory Road';
+  }
+  return m;
+}
+
+// Extract trailing time-of-day tag like "(Night)" from map name
+function extractTimeTag(name=''){
+  const m = String(name).match(/\(((?:Morning|Day|Night|Season\d+)(?:\/(?:Morning|Day|Night|Season\d+))*)\)\s*$/i);
+  return m ? m[1] : '';
+}
+
+// Remove trailing time-of-day/season tag from map name
+function stripTimeTag(name=''){
+  return String(name).replace(/\s*\(((?:Morning|Day|Night|Season\d+)(?:\/(?:Morning|Day|Night|Season\d+))*)\)\s*$/i, '').trim();
+}
+
+// Determine if two map names should be considered a match.
+// - Queries like "Route <number>" or "<number>" only match the exact same route number
+// - Partial queries like "r", "ro", "route" etc. never match anything
+// - Bare "Route" queries (with or without trailing spaces) never match anything
+// - Otherwise fall back to a simple substring check (case-insensitive)
+function mapNameMatches(candidate, needle){
+  const candRaw   = stripTimeTag(candidate).toLowerCase();
+  const searchRaw = stripTimeTag(needle).toLowerCase();
+
+  // If the search is a prefix of "route", do not match yet
+  if ('route'.startsWith(searchRaw)) return false;
+
+  // If the query starts with "<number>" or "route <number>", require that exact
+  // route number regardless of any trailing input noise.
+  const routeMatch = searchRaw.match(/^(?:route\s*)?(\d+)\b/);
+  if (routeMatch) {
+    const candRoute = candRaw.match(/^route\s*(\d+)\b/);
+    return !!candRoute && Number(candRoute[1]) === Number(routeMatch[1]);
+  }
+  // Avoid extremely short non-route queries from matching multiple maps
+  if (searchRaw.length < 3) return false;
+
+  if (searchRaw.startsWith('route')) return false;
+
+  // Alias/diacritic-insensitive comparison using simplify/alias keys
+  const candKey   = aliasKey(candRaw);
+  const searchKey = aliasKey(searchRaw);
+  if (candKey.includes(searchKey)) return true;
+
+  // Fallback to raw substring match
+  return candRaw.includes(searchRaw);
+}
+
+function lookupRarity(monName, region, map, locIndex){
+  const entry = locIndex[normalizeKey(monName)];
+  if (!entry) return '';
+  const regNorm = normalizeRegion(region);
+  const mapNorm = stripTimeTag(normalizeMapForGrouping(region, map));
+  for (const loc of entry.locations || []) {
+    if (normalizeRegion(loc.region) === regNorm &&
+        stripTimeTag(normalizeMapForGrouping(loc.region, loc.map)) === mapNorm &&
+        loc.rarity) {
+      return loc.rarity;
+    }
+  }
+  return '';
+}
+
+/* ======================= LIVE ROUTE MATCHING ======================= */
+
+/** Known alias fixes (expand as needed) — keys and values are compared after simplifyName(). */
+const LIVE_ALIASES = {
+  "oreburghcity": "oreburghcity",
+  "jubilifecity": "jubilifecity",
+  "mtcoronet": "mountcoronet",
+  "mtcoronet4f": "mountcoronet",
+  "victoryroad": "victoryroad",
+  // Handle accented/mis-encoded forms of Pokeathlon Dome from source text
+  // simplifyName("Pok�athlon Dome") -> "pokathlondome"
+  // simplifyName("Pokéathlon Dome") -> "pokathlondome"
+  // simplifyName("Pokeathlon Dome") -> "pokeathlondome"
+  "pokathlondome": "pokeathlondome",
+  // Handle mis-encoded 'Pok�mon' dropping the 'e' in certain names
+  "pokmonmansion": "pokemonmansion",
+  "pokmontower": "pokemontower",
+};
+
+/** Turn a name into a minimal comparable key */
+function simplifyName(s='') {
+  return String(s)
+    .replace(/\s+Ch\.?\s*\d+\b/ig, '')
+    .replace(/\$[\d,\.]+/g, '')
+    .replace(/\b(Sun|Mon|Tue|Tues|Wed|Thu|Thur|Fri|Sat|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\b/ig, '')
+    .replace(/\b\d{1,2}:\d{2}\b/g, '')
+    .replace(/\bmt\.?\b/ig, 'mount')
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
+    .replace(/\b(?:b\d+f|\d+f)\b/ig, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b(city|town|forest|cave|road|gate|outside|inside|entrance|exit)\b/g, '')
+    .replace(/\s+/g, '');
+}
+
+/**
+ * Tokenize a name into cleaned, lowercased words without stripping generic
+ * location suffixes.  Used for disambiguating cases like "Eterna Forest"
+ * vs. "Eterna City" where aliasKey() would otherwise collapse both to
+ * the same key.
+ */
+function tokenizeName(s='') {
+  return String(s)
+    .replace(/\s+Ch\.?\s*\d+\b/ig, '')
+    .replace(/\$[\d,\.]+/g, '')
+    .replace(/\b(Sun|Mon|Tue|Tues|Wed|Thu|Thur|Fri|Sat|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\b/ig, '')
+    .replace(/\b\d{1,2}:\d{2}\b/g, '')
+    .replace(/\bmt\.?\b/ig, 'mount')
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
+    .replace(/\b(?:b\d+f|\d+f)\b/ig, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean);
+}
+
+function aliasKey(s='') {
+  const key = simplifyName(s);
+  if (LIVE_ALIASES[key]) return LIVE_ALIASES[key];
+  return key;
+}
+
+/** Score similarity using token overlap & contains/startsWith bonuses */
+function scoreNames(a, b) {
+  if (!a || !b) return 0;
+  if (a === b) return 100;
+
+  const routeA = a.match(/(?:^|\b)route\s*(\d+)/);
+  const routeB = b.match(/(?:^|\b)route\s*(\d+)/);
+  if (routeA && routeB && routeA[1] !== routeB[1]) return 0;
+
+  let score = 0;
+  if (a.startsWith(b) || b.startsWith(a)) score += 25;
+  if (a.includes(b) || b.includes(a))   score += 20;
+  const numsA = (a.match(/\d+/g) || []).join(',');
+  const numsB = (b.match(/\d+/g) || []).join(',');
+  if (numsA && numsA === numsB) score += 30;
+  if (a.includes(' ') && b.includes(' ')) {
+    const lenRatio = Math.min(a.length, b.length) / Math.max(a.length, b.length);
+    score += Math.round(lenRatio * 15);
+  }
+  return score;
+}
+
+/** Find best map match across regions; returns { region, displayMap } or null. */
+function findBestMapName(hudText, areasIndex){
+  if (!hudText) return null;
+  const raw = String(hudText).trim();
+  // Avoid treating "Route" with no number as a fuzzy search
+  if (/^route\b(?!\s*\d)/i.test(raw)) return null;
+  const isRoute = /^route\s*\d+/i.test(raw) || /^\d+$/.test(raw);
+  // Require a minimum of three alphanumeric characters for non-route searches
+  if (!isRoute && raw.replace(/[^a-z0-9]+/ig, '').length < 3) return null;
+  if (!isRoute) {
+    const words = raw.split(/\s+/);
+    if (/^mt\.?$/i.test(words[0])) {
+      const next = words[1] || '';
+      if (next.replace(/[^a-z]/ig, '').length < 3) return null;
+    }
+  }
+  const needleKey = isRoute ? raw.toLowerCase() : aliasKey(raw);
+  const needleTokens = tokenizeName(raw);
+  const needleFull = needleTokens.join(' ');
+  const routeNeedle = isRoute
+    ? needleKey.match(/^(?:route\s*)?(\d+)\b/)
+    : needleKey.match(/(?:^|\b)route(\d+)\b/);
+  let best = null, bestScore = -1;
+  for (const [region, maps] of Object.entries(areasIndex || {})) {
+    for (const [mapName] of Object.entries(maps || {})) {
+      if (isRoute) {
+        if (!mapNameMatches(mapName, raw)) continue;
+        return { region, displayMap: normalizeMapForGrouping(region, mapName), rawMap: mapName };
+      }
+      const candidateKey = aliasKey(mapName);
+      const candTokens = tokenizeName(mapName);
+      if (
+        needleTokens.length > 1 &&
+        candTokens.length > 1 &&
+        candTokens[0] === needleTokens[0] &&
+        candTokens[1] !== needleTokens[1]
+      ) {
+        continue;
+      }
+      const candFull = candTokens.join(' ');
+      if (routeNeedle) {
+        const routeCand = candidateKey.match(/(?:^|\b)route(\d+)\b/);
+        if (!routeCand || routeCand[1] !== routeNeedle[1]) continue;
+      }
+      let exact = candidateKey === needleKey;
+      if (exact && needleTokens.length > 1 && candTokens.length > 1 && needleTokens[1] !== candTokens[1]) {
+        exact = false;
+      }
+      if (exact) {
+        const s = 100;
+        if (
+          s > bestScore ||
+          (s === bestScore && mapName.length < (best?.rawMap.length || Infinity))
+        ) {
+          bestScore = s;
+          best = {
+            region,
+            displayMap: normalizeMapForGrouping(region, mapName),
+            rawMap: mapName,
+            score: s,
+          };
+        }
+        continue;
+      }
+      const s = scoreNames(candFull, needleFull);
+      if (s > bestScore) {
+        bestScore = s;
+        best = { region, displayMap: normalizeMapForGrouping(region, mapName), rawMap: mapName, score: s };
+      }
+    }
+  }
+  if (best && best.score >= 35) return best;
+  return null;
+}
+
+/**
+ * Given raw HUD text, strip any leading garbage and try to locate a
+ * known map name.  Returns { cleaned, best } where `cleaned` is the
+ * matched substring and `best` is the map match (or null).
+ */
+function findBestMapInText(text, areasIndex){
+  const words = String(text).split(/\s+/);
+  let bestMatch = null;
+  let bestClean = text;
+  let bestScore = -1;
+  for (let i = 0; i < words.length; i++) {
+    const candidate = words.slice(i).join(' ');
+    const match = findBestMapName(candidate, areasIndex);
+    if (match) {
+      const s = scoreNames(aliasKey(match.rawMap), aliasKey(candidate));
+      if (s > bestScore) { bestScore = s; bestMatch = match; bestClean = candidate; }
+    }
+  }
+  return { cleaned: bestClean, best: bestMatch };
+}
+
+/* ======================= REVERSE AREAS -> MON INDEX ======================= */
+function buildReverseAreasIndex(areasClean) {
+  const rev = new Map();
+  for (const [region, maps] of Object.entries(areasClean || {})) {
+    for (const [mapName, entries] of Object.entries(maps || {})) {
+      const grouped = groupEntriesByMon(entries);
+      for (const g of grouped) {
+        if (!rev.has(g.monId)) rev.set(g.monId, []);
+        rev.get(g.monId).push({
+          region,
+          map: normalizeMapForGrouping(region, mapName),
+          encounters: g.encounters || []
+        });
+      }
+    }
+  }
+  return rev;
+}
+
+/* ======================= APP ======================= */
+function App(){
+
+  // Global shiny sprites toggle (mirrors Options menu)
+  const [shinyGlobal, setShinyGlobal] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    getBoolean('shinySprites', false).then((value) => {
+      if (mounted) setShinyGlobal(value);
+    });
+    const onChange = (e) => setShinyGlobal(!!e?.detail?.enabled);
+    window.addEventListener('shiny-global-changed', onChange);
+    return () => {
+      mounted = false;
+      window.removeEventListener('shiny-global-changed', onChange);
+    };
+  }, []);
+  const [profileShiny, setProfileShiny] = useState(false);
+
+  const [caught, setCaught] = useState(new Set());
+  useEffect(() => {
+    let mounted = true;
+    getJson('caughtPokemon', []).then((saved) => {
+      if (!mounted) return;
+      const list = Array.isArray(saved) ? saved : [];
+      setCaught(new Set(list));
+    });
+    return () => { mounted = false; };
+  }, []);
+  const toggleCaught = (id) => {
+    setCaught(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      void setJson('caughtPokemon', [...next]);
+      return next;
+    });
+  };
+
+  const replaceCaught = React.useCallback((ids) => {
+    setCaught(prev => {
+      let entries = [];
+      if (ids && typeof ids[Symbol.iterator] === 'function') {
+        entries = [...ids].filter(id => typeof id === 'number');
+      } else {
+        entries = [...prev];
+      }
+      const next = new Set(entries);
+      void setJson('caughtPokemon', [...next]);
+      return next;
+    });
+  }, []);
+
+  // Alpha caught state
+  const [alphaCaught, setAlphaCaught] = useState(new Set());
+  useEffect(() => {
+    let mounted = true;
+    getJson('alphaCaughtPokemon', []).then((saved) => {
+      if (!mounted) return;
+      const list = Array.isArray(saved) ? saved : [];
+      setAlphaCaught(new Set(list));
+    });
+    return () => { mounted = false; };
+  }, []);
+  const toggleAlphaCaught = (id) => {
+    setAlphaCaught(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      void setJson('alphaCaughtPokemon', [...next]);
+      return next;
+    });
+  };
+
+  // Shiny caught state - stores arrays of catch entries per Pokemon
+  const [shinyCaught, setShinyCaught] = useState(new Map());
+  useEffect(() => {
+    let mounted = true;
+    getJson('shinyCaughtPokemon', {}).then((saved) => {
+      if (!mounted) return;
+      const map = new Map();
+      for (const [id, entries] of Object.entries(saved || {})) {
+        if (Array.isArray(entries)) {
+          map.set(Number(id), entries);
+        } else if (entries && typeof entries === 'object') {
+          map.set(Number(id), [entries]);
+        }
+      }
+      setShinyCaught(map);
+    });
+    return () => { mounted = false; };
+  }, []);
+
+  const addShinyEntry = (id, data) => {
+    setShinyCaught(prev => {
+      const next = new Map(prev);
+      const existing = next.get(id) || [];
+      next.set(id, [...existing, data]);
+      const obj = {};
+      for (const [key, value] of next.entries()) {
+        obj[key] = value;
+      }
+      void setJson('shinyCaughtPokemon', obj);
+      return next;
+    });
+  };
+
+  const updateShinyEntry = (id, index, data) => {
+    setShinyCaught(prev => {
+      const next = new Map(prev);
+      const entries = next.get(id) || [];
+      if (index >= 0 && index < entries.length) {
+        const updated = [...entries];
+        updated[index] = data;
+        next.set(id, updated);
+        const obj = {};
+        for (const [key, value] of next.entries()) {
+          obj[key] = value;
+        }
+        void setJson('shinyCaughtPokemon', obj);
+      }
+      return next;
+    });
+  };
+
+  const removeShinyEntry = (id, index) => {
+    setShinyCaught(prev => {
+      const next = new Map(prev);
+      const entries = next.get(id) || [];
+      if (index >= 0 && index < entries.length) {
+        const updated = entries.filter((_, i) => i !== index);
+        if (updated.length === 0) {
+          next.delete(id);
+        } else {
+          next.set(id, updated);
+        }
+        const obj = {};
+        for (const [key, value] of next.entries()) {
+          obj[key] = value;
+        }
+        void setJson('shinyCaughtPokemon', obj);
+      }
+      return next;
+    });
+  };
+
+  const [query, setQuery]       = useState('');
+  const [areaQuery, setAreaQuery] = useState('');
+  const [areaRegion, setAreaRegion] = useState('All');
+  const searchClearIntentRef = useRef(false);
+  const [showRegionMenu, setShowRegionMenu] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [mode, setMode]         = useState('pokemon'); // 'pokemon' | 'areas' | 'horde' | 'tm' | 'items' | 'breeding' | 'daycare' | 'team' | 'market'
+  const [toolsOpen, setToolsOpen] = useState(false);
+
+  const [showTypeChart, setShowTypeChart] = useState(false);
+  const [showResources, setShowResources] = useState(false);
+
+  // Compare mode state for Pokemon Search
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareA, setCompareA] = useState(null);
+  const [compareB, setCompareB] = useState(null);
+  const { list: natureList, byName: naturesByName } = useNatures();
+  // Always disable compare when leaving the Pokemon Search tab
+  useEffect(() => {
+    if (mode !== 'pokemon') {
+      setCompareMode(false);
+      setCompareA(null);
+      setCompareB(null);
+    }
+  }, [mode]);
+
+  useEffect(() => { setToolsOpen(false); }, [mode]);
+
+  // Handle resources mode
+  useEffect(() => {
+    if (mode === 'resources') {
+      setShowResources(true);
+      setMode('home'); // Return to home after opening resources
+    }
+  }, [mode]);
+
+
+  const [theme, setTheme] = useState('classic');
+  useEffect(() => {
+    let mounted = true;
+    getItem('theme').then((saved) => {
+      if (mounted && saved) setTheme(saved);
+    });
+    return () => { mounted = false; };
+  }, []);
+  useEffect(() => {
+    document.body.classList.remove('theme-classic','theme-white','theme-black','theme-pearl','theme-diamond','theme-red','theme-blue','theme-gold','theme-silver','theme-emerald','theme-neo');
+    document.documentElement.classList.remove('theme-classic','theme-white','theme-black','theme-pearl','theme-diamond','theme-red','theme-blue','theme-gold','theme-silver','theme-emerald','theme-neo');
+    document.body.classList.add(`theme-${theme}`);
+    document.documentElement.classList.add(`theme-${theme}`);
+    void setItem('theme', theme);
+  }, [theme]);
+  const [showMoveset, setShowMoveset] = useState(false);
+  const [showSmogonSets, setShowSmogonSets] = useState(false);
+  const [showLocations, setShowLocations] = useState(false);
+  const [statusEffect, setStatusEffect] = useState(null);
+  const [isOneHp, setIsOneHp] = useState(false);
+  const [selectedBallKey, setSelectedBallKey] = useState(BALL_OPTIONS[0].key);
+  const toggleStatusEffect = (effect) => {
+    setStatusEffect((prev) => (prev === effect ? null : effect));
+  };
+  // Session-based recent Pokemon selections for quick history in Pokemon Search
+  const [recentMons, setRecentMons] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('recentMons') || '[]'); }
+    catch { return []; }
+  });
+  const [methodFilters, setMethodFilters] = useState(new Set(ENCOUNTER_TYPES));
+  useEffect(() => {
+    let mounted = true;
+    getJson('areaMethodFilters', []).then((saved) => {
+      if (!mounted) return;
+      const valid = Array.isArray(saved) ? saved.filter(t => ENCOUNTER_TYPES.includes(t)) : [];
+      setMethodFilters(new Set(valid.length ? valid : ENCOUNTER_TYPES));
+    });
+    return () => { mounted = false; };
+  }, []);
+  const [showMethodMenu, setShowMethodMenu] = useState(false);
+  const [showInfoMenu, setShowInfoMenu] = useState(false);
+  const methodFilterRef = useRef(null);
+  const infoRef = useRef(null);
+  const [showCaught, setShowCaught] = useState(true);
+  const [showEvYield, setShowEvYield] = useState(true);
+  const [showCatchRate, setShowCatchRate] = useState(true);
+  const [showCatchPercent, setShowCatchPercent] = useState(true);
+  const [showHeldItem, setShowHeldItem] = useState(true);
+  const [showLevel, setShowLevel] = useState(true);
+  useEffect(() => {
+    let mounted = true;
+    getBoolean('areaShowCaught', true).then((value) => { if (mounted) setShowCaught(value); });
+    getBoolean('areaShowEvYield', true).then((value) => { if (mounted) setShowEvYield(value); });
+    getBoolean('areaShowCatchRate', true).then((value) => { if (mounted) setShowCatchRate(value); });
+    getBoolean('areaShowCatchPercent', true).then((value) => { if (mounted) setShowCatchPercent(value); });
+    getBoolean('areaShowHeldItem', true).then((value) => { if (mounted) setShowHeldItem(value); });
+    getBoolean('areaShowLevel', true).then((value) => { if (mounted) setShowLevel(value); });
+    return () => { mounted = false; };
+  }, []);
+  const [marketData, setMarketData] = useState([]);
+  const [marketLoading, setMarketLoading] = useState(false);
+  const [marketError, setMarketError] = useState(null);
+  const [marketSelected, setMarketSelected] = useState(null);
+
+  const toggleMethodFilter = (m) => {
+    setMethodFilters(prev => {
+      const next = new Set(prev);
+      if (next.has(m)) next.delete(m); else next.add(m);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (methodFilterRef.current && !methodFilterRef.current.contains(e.target)) {
+        setShowMethodMenu(false);
+      }
+      if (infoRef.current && !infoRef.current.contains(e.target)) {
+        setShowInfoMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  useEffect(() => {
+    void setJson('areaMethodFilters', [...methodFilters]);
+  }, [methodFilters]);
+
+  useEffect(() => { void setJson('areaShowCaught', showCaught); }, [showCaught]);
+  useEffect(() => { void setJson('areaShowEvYield', showEvYield); }, [showEvYield]);
+  useEffect(() => { void setJson('areaShowCatchRate', showCatchRate); }, [showCatchRate]);
+  useEffect(() => { void setJson('areaShowCatchPercent', showCatchPercent); }, [showCatchPercent]);
+  useEffect(() => { void setJson('areaShowHeldItem', showHeldItem); }, [showHeldItem]);
+  useEffect(() => { void setJson('areaShowLevel', showLevel); }, [showLevel]);
+
+  const detailRef = useRef(null);
+
+  const [showUpToDate, setShowUpToDate] = useState(false);
+
+  // Suppress the in-app "Up to date" banner; Windows handles update UX.
+  useEffect(() => { /* no-op */ }, []);
+
+  useEffect(() => {
+    if (mode !== 'market') return;
+    let cancelled = false;
+    setMarketLoading(true);
+    setMarketError(null);
+    const extractList = (d) => {
+      if (Array.isArray(d)) return d;
+      if (Array.isArray(d?.results)) return d.results;
+      if (Array.isArray(d?.data?.results)) return d.data.results;
+      if (Array.isArray(d?.data?.items)) return d.data.items;
+      if (Array.isArray(d?.data)) return d.data;
+      if (Array.isArray(d?.items)) return d.items;
+      return [];
+    };
+    const gtlEndpoint = import.meta.env.VITE_GTL_ITEMS_URL;
+    if (!gtlEndpoint) {
+      setMarketData(ITEM_LIST);
+      setMarketLoading(false);
+      return;
+    }
+    const headers = {
+      'Accept': 'application/json'
+    };
+    if (import.meta.env.VITE_GTL_AUTH) headers['Authorization'] = import.meta.env.VITE_GTL_AUTH;
+    if (import.meta.env.VITE_GTL_ORIGIN) headers['Origin'] = import.meta.env.VITE_GTL_ORIGIN;
+    fetch(gtlEndpoint, { headers })
+      .then(async r => {
+        if (!r.ok) {
+          let msg = `Request failed: ${r.status}`;
+          const text = await r.text().catch(() => '');
+          if (text) msg += ` - ${text}`;
+          throw new Error(msg);
+        }
+        return r.json();
+      })
+      .then(d => {
+        if (cancelled) return;
+        setMarketData(extractList(d));
+      })
+      .catch(err => {
+        if (!cancelled) {
+          console.error('GTL fetch error', err);
+          setMarketError(err?.message || 'Failed to fetch data');
+        }
+      })
+      .finally(() => { if (!cancelled) setMarketLoading(false); });
+    return () => { cancelled = true; };
+  }, [mode]);
+
+  const [methodColors, setMethodColors] = useState(DEFAULT_METHOD_COLORS);
+  const [rarityColors, setRarityColors] = useState(DEFAULT_RARITY_COLORS);
+  useEffect(() => {
+    let mounted = true;
+    getJson('methodColors', {}).then((saved) => {
+      if (!mounted) return;
+      const { lure, ...rest } = saved || {};
+      setMethodColors({ ...DEFAULT_METHOD_COLORS, ...rest });
+    });
+    getJson('rarityColors', {}).then((saved) => {
+      if (!mounted) return;
+      setRarityColors({ ...DEFAULT_RARITY_COLORS, ...(saved || {}) });
+    });
+    return () => { mounted = false; };
+  }, []);
+
+  const locIndex   = useLocationsDb();
+  const areasClean = useAreasDbCleaned();
+  const tmIndex    = useTmLocations();
+  const areasRevByMon = useMemo(() => buildReverseAreasIndex(areasClean), [areasClean]); // NEW
+  const regionOptions = useMemo(() => ['All', ...Object.keys(areasClean).sort((a,b)=>a.localeCompare(b))], [areasClean]);
+
+
+  const [typeFilter, setTypeFilter] = useState('');
+  const [typeFilter2, setTypeFilter2] = useState('');
+  const [eggFilter, setEggFilter] = useState('');
+  const [abilityFilter, setAbilityFilter] = useState('');
+  const [regionFilter, setRegionFilter] = useState('');
+  const [moveFilter, setMoveFilter] = useState('');
+  const [moveLevelOnly, setMoveLevelOnly] = useState(false);
+  const [itemFilter, setItemFilter] = useState('');
+
+  // Close the Pokemon profile when any filter is selected/changed
+  useEffect(() => {
+    if (!selected) return;
+    const anyFilter = Boolean(
+      typeFilter || typeFilter2 || eggFilter || abilityFilter || regionFilter || moveFilter || itemFilter || (moveFilter && moveLevelOnly)
+    );
+    if (anyFilter) setSelected(null);
+  }, [typeFilter, typeFilter2, eggFilter, abilityFilter, regionFilter, moveFilter, moveLevelOnly, itemFilter]);
+  const typeOptions = useMemo(() => {
+    const set = new Set();
+    for (const m of DEX_LIST) for (const t of m.types || []) set.add(normalizeType(t));
+    return [...set].sort((a,b)=>a.localeCompare(b));
+  }, []);
+  const eggGroupOptions = useMemo(() => {
+    const set = new Set();
+    for (const m of DEX_LIST) for (const g of m.eggGroups || []) set.add(normalizeEggGroup(g));
+    return [...set].sort((a,b)=>a.localeCompare(b));
+  }, []);
+  const abilityOptions = useMemo(() => {
+    const set = new Set();
+    for (const m of DEX_LIST) for (const a of m.abilities || []) if (a?.name && a.name !== '--') set.add(a.name);
+    return [...set].sort((a,b)=>a.localeCompare(b));
+  }, []);
+  const moveOptions = useMemo(() => {
+    const set = new Set();
+    for (const m of DEX_LIST) for (const mv of m.moves || []) if (mv?.name) set.add(mv.name);
+    return [...set].sort((a,b)=>a.localeCompare(b));
+  }, []);
+  const itemOptions = useMemo(() => {
+    const set = new Set();
+    for (const m of DEX_LIST) for (const h of m.heldItems || []) if (h?.name) set.add(h.name);
+    // If no held items are found in the dex data, fall back to the full item list
+    // so the Held Item filter still offers suggestions.
+    if (set.size === 0) for (const item of ITEM_LIST) if (item?.name) set.add(item.name);
+    return [...set].sort((a,b)=>a.localeCompare(b));
+  }, []);
+  const pokemonRegionOptions = useMemo(() => {
+    const set = new Set();
+    for (const m of DEX_LIST) for (const l of m.locations || []) if (l.region_name) set.add(l.region_name);
+    return [...set].sort((a,b)=>a.localeCompare(b));
+  }, []);
+
+  useEffect(() => { if (!moveFilter) setMoveLevelOnly(false); }, [moveFilter]);
+
+  const hasFilters = Boolean(typeFilter || typeFilter2 || eggFilter || abilityFilter || regionFilter || moveFilter || itemFilter);
+
+  const headerSprite = useMemo(() => {
+    const opt = { shiny: !!shinyGlobal };
+    if (theme === 'red') return spriteSources(getMon('Charizard'), opt)[0] || null;
+    if (theme === 'blue') return spriteSources(getMon('Blastoise'), opt)[0] || null;
+    if (theme === 'gold') return spriteSources(getMon('Ho-Oh'), opt)[0] || null;
+    if (theme === 'silver') return spriteSources(getMon('Lugia'), opt)[0] || null;
+    if (theme === 'emerald') return spriteSources(getMon('Rayquaza'), opt)[0] || null;
+    if (theme === 'black') return spriteSources(getMon('Reshiram'), opt)[0] || null;
+    if (theme === 'white') return spriteSources(getMon('Zekrom'), opt)[0] || null;
+    if (theme === 'diamond') return spriteSources(getMon('Dialga'), opt)[0] || null;
+    if (theme === 'pearl') return spriteSources(getMon('Palkia'), opt)[0] || null;
+    // Exclude Pokemon with ID >= 650 (Event Pokemon with placeholder images)
+    const withSprite = DEX_LIST.filter(d => {
+      if (d?.id != null && d.id >= 650) return false;
+      return spriteSources(d, opt).length > 0;
+    });
+    return withSprite.length ? spriteSources(withSprite[Math.floor(Math.random()*withSprite.length)], opt)[0] : null;
+  }, [theme, shinyGlobal]);
+  useEffect(() => { document.title = APP_TITLE; }, []);
+  const headerSrc = headerSprite || TRANSPARENT_PNG;
+
+  useEffect(() => {
+    setShowRegionMenu(false);
+    if (mode !== 'pokemon') setSelected(null);
+    setTypeFilter('');
+    setTypeFilter2('');
+    setEggFilter('');
+    setAbilityFilter('');
+    setRegionFilter('');
+    setMoveFilter('');
+    setMoveLevelOnly(false);
+    setItemFilter('');
+  }, [mode]);
+  // Ensure the second Type filter only applies when the first is set
+  useEffect(() => {
+    if (!typeFilter) setTypeFilter2('');
+  }, [typeFilter]);
+  useEffect(() => {
+    setShowMoveset(false);
+    setShowSmogonSets(false);
+    setShowLocations(false);
+    setStatusEffect(null);
+    setIsOneHp(false);
+    setSelectedBallKey(BALL_OPTIONS[0].key);
+  }, [selected]);
+  useEffect(() => {
+    if (selected && detailRef.current) {
+      detailRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [selected]);
+  useEffect(() => {
+    if (!selected || selected.catchRate != null) return;
+    const localRate = catchRates[selected.id];
+    if (localRate != null) {
+      setSelected((s) => (s && s.id === selected.id ? { ...s, catchRate: localRate } : s));
+      return;
+    }
+    (async () => {
+      try {
+        const res = await fetch(`https://pokeapi.co/api/v2/pokemon-species/${selected.id}/`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setSelected((s) => (s && s.id === selected.id ? { ...s, catchRate: data.capture_rate } : s));
+      } catch (e) {
+        console.error('fetch catch rate failed', e);
+      }
+    })();
+  }, [selected]);
+  // Search by Pokemon
+  const results = React.useMemo(() => {
+    if (mode !== 'pokemon') return [];
+    const q = query.trim().toLowerCase();
+    if (!hasFilters && !q) return [];
+
+    const matchesFilters = (mon) => {
+      if (typeFilter) {
+        const types = (mon.types || []).map(normalizeType);
+        if (!types.includes(normalizeType(typeFilter))) return false;
+        if (typeFilter2) {
+          if (!types.includes(normalizeType(typeFilter2))) return false;
+        }
+      }
+      if (eggFilter) {
+        const eggs = (mon.eggGroups || []).map(normalizeEggGroup);
+        if (!eggs.includes(normalizeEggGroup(eggFilter))) return false;
+      }
+      if (abilityFilter) {
+        const abilities = (mon.abilities || []).map(a => keyName(a.name));
+        if (!abilities.includes(keyName(abilityFilter))) return false;
+      }
+      if (moveFilter) {
+        const moves = mon.moves || [];
+        if (moveLevelOnly) {
+          const has = moves.some(mv => keyName(mv.name) === keyName(moveFilter) && mv.type === 'level');
+          if (!has) return false;
+        } else {
+          const names = moves.map(mv => keyName(mv.name));
+          if (!names.includes(keyName(moveFilter))) return false;
+        }
+      }
+      if (itemFilter) {
+        const items = (mon.heldItems || []).map(h => keyName(h.name));
+        if (!items.includes(keyName(itemFilter))) return false;
+      }
+      if (regionFilter) {
+        const regions = (mon.locations || []).map(l => normalizeRegion(l.region_name));
+        if (!regions.includes(normalizeRegion(regionFilter))) return false;
+      }
+      return true;
+    };
+
+    const matchesQuery = (mon) => {
+      if (!q) return true;
+      return mon.name.toLowerCase().includes(q) || String(mon.id) === q;
+    };
+
+    let list = [];
+    for (const mon of DEX_LIST) {
+      if (matchesFilters(mon) && matchesQuery(mon)) list.push(mon);
+      for (const form of mon.forms || []) {
+        if (matchesFilters(form) && matchesQuery(form)) list.push(form);
+      }
+    }
+    if (!hasFilters && q) list = list.slice(0, 24);
+    return list;
+  }, [mode, query, hasFilters, typeFilter, typeFilter2, eggFilter, abilityFilter, regionFilter, moveFilter, moveLevelOnly, itemFilter]);
+
+  // Helper to compare mons (accounts for forms without numeric id)
+  const sameMon = (a, b) => {
+    if (!a || !b) return false;
+    if (a.id != null && b.id != null) return Number(a.id) === Number(b.id);
+    return normalizeKey(a.name) === normalizeKey(b.name);
+  };
+
+  // Results with pinned first selection in compare mode
+  const combinedResults = React.useMemo(() => {
+    if (mode !== 'pokemon') return results;
+    if (!(compareMode && compareA && !compareB)) return results;
+    const rest = results.filter(r => !sameMon(r, compareA));
+    return [compareA, ...rest];
+  }, [results, compareMode, compareA, compareB, mode]);
+
+  // Filter recent list based on compare state
+  const recentFiltered = React.useMemo(() => {
+    if (mode !== 'pokemon') return recentMons;
+    if (compareMode && compareA && compareB) return [];
+    if (compareMode && compareA && !compareB) {
+      if (!Array.isArray(recentMons)) return [];
+      return recentMons.filter(r => {
+        const m = getMonByDex(r?.id);
+        if (m) return !sameMon(m, compareA);
+        if (r?.name) return normalizeKey(r.name) !== normalizeKey(compareA.name);
+        return true;
+      });
+    }
+    return recentMons;
+  }, [recentMons, mode, compareMode, compareA, compareB]);
+
+  // Track recents when selection changes
+  useEffect(() => {
+    if (!selected || selected.id == null) return;
+    setRecentMons(prev => {
+      const base = Array.isArray(prev) ? prev : [];
+      const without = base.filter(m => m && m.id !== selected.id);
+      const next = [{ id: selected.id, name: selected.name }, ...without].slice(0, 8);
+      try { sessionStorage.setItem('recentMons', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, [selected?.id]);
+
+  // No additional reset needed; recents show whenever the query is empty.
+
+  // Search by Area (cleaned + grouped) with Sinnoh Victory Road unified
+  const areaHits = React.useMemo(() => {
+    if (mode!=='areas') return [];
+    const q = areaQuery.trim().toLowerCase();
+    if (q.length < 2) return [];
+    // Suppress results while user is typing the word "route"
+    if ('route'.startsWith(q)) return [];
+    // If query begins with "route" but lacks a number, avoid suggesting routes yet
+    if (q.startsWith('route') && !/^route\s*\d+/.test(q)) return [];
+    const buckets = new Map();
+    const regionKey = normalizeRegion(areaRegion);
+    for (const [region, maps] of Object.entries(areasClean)) {
+      const regionNorm = normalizeRegion(region);
+      if (regionKey !== 'all' && regionNorm !== regionKey) continue;
+      for (const [mapName, entries] of Object.entries(maps)) {
+        const displayMap = normalizeMapForGrouping(region, mapName);
+        if (!mapNameMatches(displayMap, q)) continue;
+        const time = extractTimeTag(displayMap).toLowerCase();
+        const baseMap = stripTimeTag(displayMap);
+        const key = `${region}|||${baseMap}`;
+        if (!buckets.has(key)) buckets.set(key, { region, map: baseMap, entries: [] });
+        const adjusted = time
+          ? entries.map(e => ({ ...e, method: e.method ? `${e.method} (${time})` : `(${time})` }))
+          : entries;
+        buckets.get(key).entries.push(...adjusted);
+      }
+    }
+    const hits = [];
+    for (const { region, map, entries } of buckets.values()) {
+      const regionNorm = normalizeRegion(region);
+      if (regionKey !== 'all' && regionNorm !== regionKey) continue;
+      let grouped = groupEntriesByMon(entries).map(g => {
+        const fallback = lookupRarity(g.monName, region, map, locIndex);
+        g.encounters.forEach(enc => {
+          if (!enc.rarities.length && fallback) enc.rarities.push(fallback);
+        });
+        return g;
+      });
+      if (methodFilters && methodFilters.size) {
+        grouped = grouped
+          .map(g => ({
+            ...g,
+            encounters: g.encounters.filter(enc => {
+              const method = (enc.method || '').toLowerCase();
+              const rarities = (enc.rarities || []).map(r => r.toLowerCase());
+              const filters = Array.from(methodFilters).map(f => String(f).toLowerCase());
+              // Only show lure encounters when the 'Lure' filter is enabled.
+              if (/lure/.test(method) || rarities.some(r => /lure/.test(r))) {
+                return filters.includes('lure');
+              }
+              return filters.some(fL => method.includes(fL) || rarities.some(r => r.includes(fL)));
+            })
+          }))
+          .filter(g => g.encounters.length);
+      }
+      if (grouped.length) hits.push({ region, map, count: grouped.length, entries: grouped });
+    }
+    hits.sort((a,b)=> a.region.localeCompare(b.region) || a.map.localeCompare(b.map));
+    return hits.slice(0, 30);
+ }, [areaQuery, areasClean, locIndex, mode, areaRegion, methodFilters]);
+
+  const tmHits = React.useMemo(() => {
+    if (mode !== 'tm') return [];
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const regionKey = normalizeRegion(areaRegion);
+    const hits = [];
+    for (const [region, entries] of Object.entries(tmIndex)) {
+      const regionNorm = normalizeRegion(region);
+      if (regionKey !== 'all' && regionNorm !== regionKey) continue;
+      for (const entry of entries || []) {
+        if (entry.tm.toLowerCase().includes(q)) {
+          hits.push({ ...entry, region });
+        }
+      }
+    }
+    hits.sort((a,b)=> a.region.localeCompare(b.region) || a.tm.localeCompare(b.tm));
+    return hits;
+  }, [query, tmIndex, mode, areaRegion]);
+
+  const itemHits = React.useMemo(() => {
+    if (mode !== 'items') return [];
+    const q = normalizeKey(query);
+    if (!q) return [];
+    return ITEM_LIST.filter(i => normalizeKey(i.name).includes(q)).slice(0, 30);
+  }, [query, mode]);
+
+const marketResults = React.useMemo(() => {
+    if (mode !== 'market') return [];
+    const q = query.trim().toLowerCase();
+    return marketData
+      .map((item, idx) => {
+        const id = item?.id ?? item?.item_id;
+        const name = item?.name || item?.item_name || ITEM_INDEX.byId.get(id)?.name || `Item ${id ?? idx}`;
+        const price = item?.price ?? item?.min_price;
+        return { ...item, id, name, price };
+      })
+      .filter(i => i.name && !i.name.includes('?'))
+      .filter(i => !q || i.name.toLowerCase().includes(q))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [mode, query, marketData]);
+
+  const openMarketItem = (item) => {
+    setMarketSelected(item);
+  };
+
+  // Selected Pokemon details (MERGED sources)
+  const resolved = React.useMemo(() => {
+    if (!selected) return null;
+
+    const norm = normalizeKey(selected.name);
+    const baseLocsRaw = (() => {
+      const locEntry = locIndex[norm] || locIndex[`and-${norm}`] || locIndex[norm.replace(/^and-/, '')];
+      return Array.isArray(locEntry?.locations) ? locEntry.locations : [];
+    })();
+
+    // Normalize base locations to array-of-arrays form
+    const baseLocs = baseLocsRaw.map(l => ({
+      region: titleCase(l.region || 'Unknown'),
+      map: normalizeMapForGrouping(l.region || 'Unknown', l.map || ''),
+      method: Array.isArray(l.method) ? l.method.filter(Boolean) : (l.method ? [l.method] : []),
+      rarity: Array.isArray(l.rarity) ? l.rarity.filter(Boolean) : (l.rarity ? [l.rarity] : []),
+      min: l.min_level ?? l.min,
+      max: l.max_level ?? l.max,
+      items: Array.isArray(l.items) ? l.items.filter(Boolean) : [],
+    }));
+
+    // Extra from Areas reverse index
+    const extraLocs = (areasRevByMon.get(selected.id) || []).flatMap(e =>
+      (e.encounters || []).map(enc => ({
+        region: titleCase(e.region),
+        map: e.map,
+        method: [enc.method].filter(Boolean),
+        rarity: (enc.rarities || []).filter(Boolean),
+        min: enc.min,
+        max: enc.max,
+        items: (enc.items || []).filter(Boolean),
+      }))
+    );
+
+
+    // Locations from dex data
+    const dexLocs = (selected.locations || []).map(l => {
+      let method = l.type;
+      let rarity = l.rarity;
+      if (rarity && /lure/i.test(rarity)) {
+        method = `Lure${method ? ` (${method})` : ''}`;
+        rarity = '';
+      }
+      if (method && /lure/i.test(method)) {
+        rarity = '';
+      }
+      return {
+        region: titleCase(l.region_name || 'Unknown'),
+        map: normalizeMapForGrouping(l.region_name || 'Unknown', stripSeason(l.location)),
+        method: [method].filter(Boolean),
+        rarity: [rarity].filter(Boolean),
+        min: l.min_level,
+        max: l.max_level,
+        items: (selected.heldItems || []).map(h => h.name),
+      };
+    });
+
+    // Merge & dedupe by region+map; union methods/rarities
+    const byKey = new Map();
+    for (const src of [...baseLocs, ...extraLocs, ...dexLocs]) {
+      if (!src.map) continue;
+      const key = `${src.region}|${src.map}`;
+      const prev = byKey.get(key) || { region: src.region, map: src.map, method: [], rarity: [], items: [], min: src.min, max: src.max };
+      prev.method.push(...(src.method || []));
+      prev.rarity.push(...(src.rarity || []));
+      prev.items.push(...(src.items || []));
+      prev.min = Math.min(prev.min ?? src.min ?? Infinity, src.min ?? Infinity);
+      prev.max = Math.max(prev.max ?? src.max ?? 0, src.max ?? 0);
+      byKey.set(key, prev);
+    }
+
+    const mergedLocs = [...byKey.values()].map(l => {
+      const methods = [...new Set(l.method)];
+      let rarities = [...new Set(l.rarity)];
+      if (methods.length === 1) {
+        rarities = selectRarest(rarities);
+      }
+      const hordeSize = getHordeSize(l.region, l.map, selected.name);
+      return {
+        ...l,
+        method: methods,
+        rarity: rarities,
+        items: [...new Set(l.items)],
+        ...(hordeSize ? { hordeSize } : {}),
+      };
+    });
+
+    const types = [...new Set((selected.types || []).map(normalizeType))];
+    const moves = groupMoves(selected.moves || []);
+    return {
+      ...selected,
+      types,
+      moves,
+      weakness: computeWeakness(types),
+      locations: mergedLocs,
+      eggGroups: selected.eggGroups || []
+    };
+  }, [selected, locIndex, areasRevByMon]);
+
+  // Group locations by region
+  const byRegion = React.useMemo(() => {
+    if (!resolved?.locations?.length) return [];
+    const groups = new Map();
+    for (const L of resolved.locations) {
+      const reg = titleCase(L.region || 'Unknown');
+      if (!groups.has(reg)) groups.set(reg, []);
+      groups.get(reg).push(L);
+    }
+    const order = ['Kanto','Johto','Hoenn','Sinnoh','Unova','Unknown'];
+    return [...groups.entries()].sort((a,b) => order.indexOf(a[0]) - order.indexOf(b[0]));
+  }, [resolved]);
+
+  const selectedBall = React.useMemo(
+    () => BALL_OPTIONS.find(opt => opt.key === selectedBallKey) || BALL_OPTIONS[0],
+    [selectedBallKey]
+  );
+
+  const catchPercent = React.useMemo(() => {
+    if (!resolved?.catchRate) return null;
+    const statusMult = STATUS_MULTIPLIERS[statusEffect] || 1;
+    const chance = calcCatchChance(
+      resolved.catchRate,
+      isOneHp ? 0.01 : 1,
+      statusMult,
+      selectedBall.multiplier
+    );
+    return chance * 100;
+  }, [resolved, statusEffect, isOneHp, selectedBall]);
+
+  const [singleBuild, setSingleBuild] = useState(() => mkInitialBuild());
+  const singleDirty = isDirty(singleBuild);
+  const singleBaseStats = useMemo(() => resolved ? getBaseStatsFrom(resolved) : null, [resolved]);
+  const natureModsOf = (name) => {
+    const n = naturesByName.get(normalizeKey(name || ''));
+    return n?.mods || { attack:1, defense:1, special_attack:1, special_defense:1, speed:1 };
+  };
+  const singleOverride = useMemo(() => {
+    if (!singleBaseStats || !singleDirty) return null;
+    const b = coerceBuild(singleBuild);
+    return computeFinalStats(singleBaseStats, b.iv, b.ev, b.level, natureModsOf(b.nature));
+  }, [singleBaseStats, singleBuild, singleDirty]);
+  const singleUnderline = useMemo(() => underlineFrom(singleOverride, singleBaseStats), [singleOverride, singleBaseStats]);
+  const singleSetters = {
+    onSetIV: (key, val) => setSingleBuild((prev) => ({ ...prev, iv: { ...prev.iv, [key]: val } })),
+    onSetEV: (key, val) => setSingleBuild((prev) => {
+      const next = { ...prev, ev: { ...prev.ev, [key]: val } };
+      const sum = ['hp','attack','defense','special_attack','special_defense','speed'].reduce((s,k)=> s + (Number(next.ev[k] || 0) || 0), 0);
+      if (sum <= 510) return next;
+      const others = sum - (Number(next.ev[key] || 0) || 0);
+      const allowed = Math.max(0, 510 - others);
+      return { ...prev, ev: { ...prev.ev, [key]: Math.min(allowed, Number(val)||0) } };
+    }),
+    onSetLevel: (val) => setSingleBuild((prev) => ({ ...prev, level: val }))
+  };
+  useEffect(() => { setSingleBuild(mkInitialBuild()); }, [resolved]);
+  useEffect(() => { setProfileShiny(false); }, [resolved]);
+
+  return (
+    <CaughtContext.Provider value={{ caught, toggleCaught, replaceCaught }}>
+    <AlphaCaughtContext.Provider value={{ alphaCaught, toggleAlphaCaught }}>
+    <ShinyCaughtContext.Provider value={{ shinyCaught, addShinyEntry, updateShinyEntry, removeShinyEntry }}>
+    <ColorContext.Provider value={{ methodColors, rarityColors, setMethodColors, setRarityColors }}>
+      <>
+      {/* App-wide overlay controls (top-right) */}
+      <div style={{ position:'fixed', top:10, right:12, zIndex:9999, display:'flex', gap:8 }}>
+        <OptionsMenu />
+      </div>
+      {/* Mount the color picker without a visible trigger so Options menu can open it */}
+      <ColorPickerButton renderTrigger={false} />
+      {/* Top-center actions (full-width container ignores pointer events; inner wrapper handles clicks) */}
+      <div style={{ position:'fixed', top:10, left:0, right:0, zIndex:9999, display:'flex', justifyContent:'center', pointerEvents:'none' }}>
+        <div style={{ display:'inline-flex', gap:8, pointerEvents:'auto' }}>
+          <CaughtListButton />
+          <AlphaDexButton />
+          <EventDexButton />
+          <ShinyDexButton />
+        </div>
+      </div>
+
+{showUpToDate && (
+        <div
+          style={{
+            position:'fixed',
+            top:10,
+            left:'50%',
+            transform:'translateX(-50%)',
+            zIndex:9999,
+            padding:'8px 12px',
+            background:'var(--surface)',
+            color:'var(--text)',
+            borderRadius:10,
+            border:'1px solid var(--divider)',
+            boxShadow:'0 8px 28px rgba(0,0,0,.45)',
+            fontWeight:700,
+            pointerEvents:'none'
+          }}
+        >
+          Up to date
+        </div>
+      )}
+
+{mode === 'home' ? (
+        <HomeScreen setMode={setMode} />
+      ) : (
+      <div className="container">
+        {/* Header */}
+        <div className="header" style={{ alignItems:'center', cursor:'pointer' }} onClick={()=>setMode('home')}>
+          <img src={headerSrc} alt="" style={{ width:56, height:56, objectFit:'contain', imageRendering:'pixelated' }} />
+          <div style={{ marginLeft:8, lineHeight:1.1 }}>
+            <h1 style={{ margin:0 }}>3&3s Pocket Dex</h1>
+            <div style={{ fontSize:12, fontWeight:500, opacity:0.75 }}>A PokeMMO Companion Tool</div>
+          </div>
+        </div>
+
+        {/* Search / Mode Card */}
+        <div style={{ ...styles.card, marginBottom:16 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+            <div style={styles.segWrap}>
+              <button style={styles.segBtn(mode==='pokemon')} onClick={()=>setMode('pokemon')}>Pokemon Search</button>
+              <button style={styles.segBtn(mode==='areas')} onClick={()=>setMode('areas')}>Area Search</button>
+              <button style={styles.segBtn(mode==='horde')} onClick={()=>setMode('horde')}>Horde Search</button>
+              <button style={styles.segBtn(mode==='tm')} onClick={()=>setMode('tm')}>TM Locations</button>
+              <button style={styles.segBtn(mode==='team')} onClick={()=>setMode('team')}>Team Builder</button>
+              <div style={{ position:'relative' }}>
+                <button style={styles.segBtn(mode==='items' || mode==='breeding' || mode==='daycare' || mode==='market')} onClick={()=>setToolsOpen(v=>!v)}>
+                  Tools {toolsOpen ? '▴' : '▾'}
+                </button>
+                {toolsOpen && (
+                  <div style={{ position:'absolute', top:'100%', right:0, background:'var(--surface)', border:'1px solid var(--divider)', borderRadius:8, display:'flex', flexDirection:'column', zIndex:10, overflow:'hidden' }}>
+                    <button style={{ ...styles.segBtn(mode==='items'), width:'100%', borderRadius:0 }} onClick={()=>setMode('items')}>Items</button>
+                    <div style={{ height:1, background:'var(--divider)', opacity:0.4 }} />
+                    <button style={{ ...styles.segBtn(mode==='breeding'), width:'100%', borderRadius:0 }} onClick={()=>setMode('breeding')}>Breeding</button>
+                    <div style={{ height:1, background:'var(--divider)', opacity:0.4 }} />
+                    <button style={{ ...styles.segBtn(mode==='daycare'), width:'100%', borderRadius:0 }} onClick={()=>setMode('daycare')}>Daycare Manager</button>
+                    <div style={{ height:1, background:'var(--divider)', opacity:0.4 }} />
+                    <button style={{ ...styles.segBtn(mode==='market'), width:'100%', borderRadius:0 }} onClick={()=>setMode('market')}>Market</button>
+                    <div style={{ height:1, background:'var(--divider)', opacity:0.4 }} />
+                    <button
+                      style={{ ...styles.segBtn(false), width:'100%', borderRadius:0 }}
+                      onClick={()=>{ setShowTypeChart(true); setToolsOpen(false); }}
+                    >
+                      Type Chart
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Resources button */}
+            <div style={{ ...styles.segWrap, margin: '0 auto' }}>
+              <button
+                style={styles.segBtn(false)}
+                onClick={() => setShowResources(true)}
+              >
+                📚 Resources
+              </button>
+            </div>
+        </div>
+
+        <div style={{ display: mode==='horde' ? 'block' : 'none' }}>
+          <HordeSearch />
+        </div>
+
+        {mode==='pokemon' && (
+          <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:8 }}>
+            <select
+              value={typeFilter}
+                onChange={e=>setTypeFilter(e.target.value)}
+                className="input"
+                style={{ height:44, borderRadius:10, width:'auto' }}
+              >
+                <option value="">Type</option>
+                {typeOptions.map(t => <option key={t} value={t}>{titleCase(t)}</option>)}
+              </select>
+              {Boolean(typeFilter) && (
+                <select
+                  value={typeFilter2}
+                  onChange={e=>setTypeFilter2(e.target.value)}
+                  className="input"
+                  style={{ height:44, borderRadius:10, width:'auto' }}
+                >
+                  <option value="">Type</option>
+                  {typeOptions.map(t => <option key={`t2-${t}`} value={t}>{titleCase(t)}</option>)}
+                </select>
+              )}
+              <select
+                value={eggFilter}
+                onChange={e=>setEggFilter(e.target.value)}
+                className="input"
+                style={{ height:44, borderRadius:10, width:'auto' }}
+              >
+                <option value="">Egg Group</option>
+                {eggGroupOptions.map(g => <option key={g} value={g}>{titleCase(g)}</option>)}
+              </select>
+              <select
+                value={abilityFilter}
+                onChange={e=>setAbilityFilter(e.target.value)}
+                className="input"
+                style={{ height:44, borderRadius:10, width:'auto' }}
+              >
+                <option value="">Ability</option>
+                {abilityOptions.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+              <select
+                value={regionFilter}
+                onChange={e=>setRegionFilter(e.target.value)}
+                className="input"
+                style={{ height:44, borderRadius:10, width:'auto' }}
+              >
+                <option value="">Region</option>
+                {pokemonRegionOptions.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+              <SearchFilter
+                value={moveFilter}
+                onChange={setMoveFilter}
+                options={moveOptions}
+                placeholder="Move"
+              />
+              <SearchFilter
+                value={itemFilter}
+                onChange={setItemFilter}
+                options={itemOptions}
+                placeholder="Held Item"
+              />
+              <button
+                type="button"
+                className={`region-btn${compareMode ? ' compare-active' : ''}`}
+                aria-pressed={compareMode}
+                onClick={() => {
+                  setMode('pokemon');
+                  if (compareMode) {
+                    setCompareMode(false);
+                    setCompareA(null);
+                    setCompareB(null);
+                    setSelected(null);
+                    setQuery('');
+                  } else {
+                    setCompareMode(true);
+                  }
+                }}
+                title="Compare"
+              >
+                Compare
+              </button>
+              {false && (/* Clear Filters moved to inline chips row */
+                <button
+                  type="button"
+                  className="region-btn"
+                  onClick={() => {}}
+                  title="Clear Filters"
+                >
+                  Clear Filters
+                </button>
+              )}
+              {/* Compare toggle moved to top menu and profile header */}
+            </div>
+          )}
+
+          {/* Active filter chips (Pokemon) */}
+          {mode==='pokemon' && hasFilters && (
+            <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap', marginBottom:8 }}>
+              <button
+                type="button"
+                className="region-btn"
+                onClick={() => {
+                  // Reset all Pokemon filters
+                  setTypeFilter('');
+                  setTypeFilter2('');
+                  setEggFilter('');
+                  setAbilityFilter('');
+                  setRegionFilter('');
+                  setMoveFilter('');
+                  setMoveLevelOnly(false);
+                  setItemFilter('');
+                }}
+                title="Clear Filters"
+              >
+                Clear Filters
+              </button>
+              {typeFilter && (
+                <div style={styles.chip}>
+                  <span>{titleCase(typeFilter)}</span>
+                  <button
+                    type="button"
+                    aria-label="Clear Type Filter"
+                    title="Clear"
+                    style={styles.chipX}
+                    className="chip-x"
+                    onClick={(e)=>{ e.stopPropagation(); setTypeFilter(''); }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {typeFilter2 && (
+                <div style={styles.chip}>
+                  <span>{titleCase(typeFilter2)}</span>
+                  <button
+                    type="button"
+                    aria-label="Clear Secondary Type Filter"
+                    title="Clear"
+                    style={styles.chipX}
+                    className="chip-x"
+                    onClick={(e)=>{ e.stopPropagation(); setTypeFilter2(''); }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {eggFilter && (
+                <div style={styles.chip}>
+                  <span>{titleCase(eggFilter)}</span>
+                  <button
+                    type="button"
+                    aria-label="Clear Egg Group Filter"
+                    title="Clear"
+                    style={styles.chipX}
+                    className="chip-x"
+                    onClick={(e)=>{ e.stopPropagation(); setEggFilter(''); }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {abilityFilter && (
+                <div style={styles.chip}>
+                  <span>{abilityFilter}</span>
+                  <button
+                    type="button"
+                    aria-label="Clear Ability Filter"
+                    title="Clear"
+                    style={styles.chipX}
+                    className="chip-x"
+                    onClick={(e)=>{ e.stopPropagation(); setAbilityFilter(''); }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {regionFilter && (
+                <div style={styles.chip}>
+                  <span>{regionFilter}</span>
+                  <button
+                    type="button"
+                    aria-label="Clear Region Filter"
+                    title="Clear"
+                    style={styles.chipX}
+                    className="chip-x"
+                    onClick={(e)=>{ e.stopPropagation(); setRegionFilter(''); }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {moveFilter && (
+                <div style={styles.chip}>
+                  <span>{moveFilter}</span>
+                  <button
+                    type="button"
+                    aria-label="Clear Move Filter"
+                    title="Clear"
+                    style={styles.chipX}
+                    className="chip-x"
+                    onClick={(e)=>{ e.stopPropagation(); setMoveFilter(''); setMoveLevelOnly(false); }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {moveFilter && moveLevelOnly && (
+                <div style={styles.chip}>
+                  <span>Level-up only</span>
+                  <button
+                    type="button"
+                    aria-label="Clear Level-up Only Filter"
+                    title="Clear"
+                    style={styles.chipX}
+                    className="chip-x"
+                    onClick={(e)=>{ e.stopPropagation(); setMoveLevelOnly(false); }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {itemFilter && (
+                <div style={styles.chip}>
+                  <span>{itemFilter}</span>
+                  <button
+                    type="button"
+                    aria-label="Clear Item Filter"
+                    title="Clear"
+                    style={styles.chipX}
+                    className="chip-x"
+                    onClick={(e)=>{ e.stopPropagation(); setItemFilter(''); }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Context label + search input */}
+          {mode!=='breeding' && mode!=='daycare' && mode!=='team' && mode!=='horde' && (
+            <>
+               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                <div className="label-muted" style={{ display:'flex', alignItems:'center', gap:8 }}>
+                  <span>
+                    {mode==='pokemon'
+                      ? 'Search by name or Dex #'
+                      : mode==='areas'
+                      ? 'Search by route/area name'
+                      : mode==='tm'
+                      ? 'Search by TM name'
+                      : 'Search by item name'}
+                  </span>
+                  {mode==='areas' && areaRegion !== 'All' && (
+                    <div style={{ ...styles.chip, marginLeft:4 }}>
+                      <span>{areaRegion}</span>
+                      <button
+                        type="button"
+                        aria-label="Clear Region Filter"
+                        title="Clear"
+                        style={styles.chipX}
+                        className="chip-x"
+                        onClick={(e)=>{ e.stopPropagation(); setAreaRegion('All'); }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {mode==='pokemon' && moveFilter && (
+                  <label className="label-muted" style={{ display:'flex', alignItems:'center', gap:6, fontSize:12 }}>
+                    <input
+                      type="checkbox"
+                      checked={moveLevelOnly}
+                      onChange={e=>setMoveLevelOnly(e.target.checked)}
+                    />
+                    Level-up only
+                  </label>
+                )}
+                {mode==='areas' && (
+                  <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                    <div ref={infoRef} style={{ position:'relative' }}>
+                      <button
+                        className="region-btn"
+                        onClick={() => setShowInfoMenu(v => !v)}
+                      >
+                        Encounter Info {showInfoMenu ? '▴' : '▾'}
+                      </button>
+                      {showInfoMenu && (
+                        <div
+                          style={{ position:'absolute', right:0, top:'100%', marginTop:4, padding:8, background:'var(--surface)', border:'1px solid var(--divider)', borderRadius:8, zIndex:20, display:'flex', flexDirection:'column', gap:4 }}
+                        >
+                          <label className="label-muted" style={{ display:'flex', alignItems:'center', gap:4 }}>
+                            <input
+                              type="checkbox"
+                              checked={showCaught}
+                              onChange={e=>setShowCaught(e.target.checked)}
+                            />
+                            Toggle Caught
+                          </label>
+                          <label className="label-muted" style={{ display:'flex', alignItems:'center', gap:4 }}>
+                            <input
+                              type="checkbox"
+                              checked={showEvYield}
+                              onChange={e=>setShowEvYield(e.target.checked)}
+                            />
+                            EV Yield
+                          </label>
+                          <label className="label-muted" style={{ display:'flex', alignItems:'center', gap:4 }}>
+                            <input
+                              type="checkbox"
+                              checked={showCatchRate}
+                              onChange={e=>setShowCatchRate(e.target.checked)}
+                            />
+                            Catch Rate
+                          </label>
+                          <label className="label-muted" style={{ display:'flex', alignItems:'center', gap:4 }}>
+                            <input
+                              type="checkbox"
+                              checked={showCatchPercent}
+                              onChange={e=>setShowCatchPercent(e.target.checked)}
+                            />
+                            Catch %
+                          </label>
+                          <label className="label-muted" style={{ display:'flex', alignItems:'center', gap:4 }}>
+                            <input
+                              type="checkbox"
+                              checked={showHeldItem}
+                              onChange={e=>setShowHeldItem(e.target.checked)}
+                            />
+                            Held Item
+                          </label>
+                          <label className="label-muted" style={{ display:'flex', alignItems:'center', gap:4 }}>
+                            <input
+                              type="checkbox"
+                              checked={showLevel}
+                              onChange={e=>setShowLevel(e.target.checked)}
+                            />
+                            Level
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                    <div ref={methodFilterRef} style={{ position:'relative' }}>
+                      <button
+                        className="region-btn"
+                        style={{ display:'flex', alignItems:'center', gap:4 }}
+                        onClick={() => setShowMethodMenu(v => !v)}
+                      >
+                        Encounter Type {showMethodMenu ? '▴' : '▾'}
+                      </button>
+                      {showMethodMenu && (
+                        <div
+                          style={{ position:'absolute', right:0, top:'100%', marginTop:4, padding:8, background:'var(--surface)', border:'1px solid var(--divider)', borderRadius:8, zIndex:20, display:'flex', flexDirection:'column', gap:4 }}
+                        >
+                          {ENCOUNTER_TYPES.map(t => (
+                            <label key={t} className="label-muted" style={{ display:'flex', alignItems:'center', gap:4 }}>
+                              <input
+                                type="checkbox"
+                                checked={methodFilters.has(t)}
+                                onChange={() => toggleMethodFilter(t)}
+                              />
+                              {t}
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ position:'relative' }}>
+                      <button
+                        type="button"
+                        onClick={()=> setShowRegionMenu(v => !v)}
+                        className="region-btn"
+                      >
+                        {areaRegion === 'All' ? 'Region' : areaRegion}
+                      </button>
+                      {showRegionMenu && (
+                        <div className="region-menu">
+                          {regionOptions.map(r => (
+                            <button
+                              type="button"
+                              key={r}
+                              onClick={()=> { setAreaRegion(r); setShowRegionMenu(false); }}
+                              className={r===areaRegion ? 'active' : undefined}
+                            >
+                              {r}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {/* Region chip now shown inline with label on the left; no separate row here */}
+                {mode==='tm' && (
+                  <div style={{ position:'relative' }}>
+                    <button
+                      type="button"
+                      onClick={()=> setShowRegionMenu(v => !v)}
+                      className="region-btn"
+                    >
+                      {areaRegion === 'All' ? 'Region' : areaRegion}
+                    </button>
+                    {showRegionMenu && (
+                      <div className="region-menu">
+                        {regionOptions.map(r => (
+                          <button
+                            type="button"
+                            key={r}
+                            onClick={()=> { setAreaRegion(r); setShowRegionMenu(false); }}
+                            className={r===areaRegion ? 'active' : undefined}
+                          >
+                            {r}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <input
+                value={mode==='areas' ? areaQuery : query}
+                onChange={(e)=> {
+                  if (mode==='areas') setAreaQuery(e.target.value);
+                  else setQuery(e.target.value);
+                }}
+                onMouseDown={() => { searchClearIntentRef.current = true; }}
+                onTouchStart={() => { searchClearIntentRef.current = true; }}
+                onFocus={() => {
+                  const shouldClear = searchClearIntentRef.current;
+                  searchClearIntentRef.current = false;
+                  if (!shouldClear) return;
+                  if (mode==='areas') setAreaQuery('');
+                  else setQuery('');
+                }}
+                onBlur={() => { searchClearIntentRef.current = false; }}
+                onMouseUp={() => { searchClearIntentRef.current = false; }}
+                onMouseLeave={() => { searchClearIntentRef.current = false; }}
+                onTouchEnd={() => { searchClearIntentRef.current = false; }}
+                onTouchCancel={() => { searchClearIntentRef.current = false; }}
+                placeholder={mode==='pokemon'
+                  ? 'e.g. Garchomp or 445'
+                  : mode==='areas'
+                  ? 'e.g. Victory Road, Viridian Forest, Route 10'
+                  : mode==='tm'
+                  ? 'e.g. Giga Drain, Payback'
+                  : 'e.g. Master Ball, Shiny Charm'}
+                className="input"
+                style={{ height:44, borderRadius:10, fontSize:16 }}
+              />
+            </>
+          )}
+
+          {/* Breeding simulator */}
+          {mode==='breeding' && (
+            <div style={{ marginTop:4 }}>
+              <BreedingSimulator />
+            </div>
+          )}
+
+          {mode==='daycare' && (
+            <div style={{ marginTop:4 }}>
+              <DaycareManager />
+            </div>
+          )}
+
+          {/* Team builder */}
+          {mode==='team' && (
+            <div style={{ marginTop:4 }}>
+              <TeamBuilder
+                onViewMon={(val) => {
+                  let target = null;
+                  if (val && typeof val === 'object') {
+                    target = getMon(val.name) || getMonByDex(val.id);
+                  } else if (val) {
+                    target = getMon(String(val));
+                  }
+                  if (target) {
+                    setSelected(target);
+                    setMode('pokemon');
+                  }
+                }}
+              />
+            </div>
+          )}
+
+          {/* Recent selections (session) shown when Pokemon search is blank and no filters are active */}
+          {mode==='pokemon' && !query.trim() && !hasFilters && recentFiltered.length > 0 && !(compareMode && compareA && compareB) && (
+            <div style={{ marginTop:12 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                <div className="label-muted" style={{ fontWeight:700 }}>Recent</div>
+                <button
+                  type="button"
+                  className="link-btn"
+                  style={{ background:'none', border:0, padding:0, color:'var(--accent)', fontWeight:700, cursor:'pointer' }}
+                  onClick={() => {
+                    setRecentMons([]);
+                    try { sessionStorage.removeItem('recentMons'); } catch {}
+                  }}
+                >
+                  Clear Recents
+                </button>
+              </div>
+              <div className="result-grid">
+                {recentFiltered.map((r) => {
+                  const mon = getMonByDex(r.id);
+                  if (!mon) return null;
+                  const t = [...new Set((mon.types || []).map(normalizeType))];
+                  return (
+                    <button
+                      key={`recent-${r.id}`}
+                      onClick={()=>{
+                        if (compareMode) {
+                          if (!compareA || (compareA && compareB)) {
+                            setCompareA(mon);
+                            setCompareB(null);
+                            setSelected(null);
+                            setQuery('');
+                          } else if (compareA && !compareB) {
+                            if (!sameMon(compareA, mon)) {
+                              setCompareB(mon);
+                              setQuery('');
+                              setSelected(null);
+                            }
+                          }
+                        } else {
+                          setSelected(mon);
+                          setQuery('');
+                        }
+                      }}
+                      className="result-tile"
+                      style={{ alignItems:'center', padding:10, borderRadius:12, border:'1px solid var(--divider)', background:'var(--surface)', gap:12 }}
+                    >
+                      <Sprite mon={mon} size={64} alt={mon.name} />
+                      <div style={{ textAlign:'left', flex:1, minWidth:0 }}>
+                        <div style={{ fontWeight:800 }}>{titleCase(mon.name)}</div>
+                        <div className="label-muted">Dex #{mon.id}</div>
+                        <div style={{ display:'flex', gap:6, marginTop:6 }}>
+                          {t.map(tp => <TypePill key={`r-${r.id}-${tp}`} t={tp} compact />)}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Pokemon results */}
+          {mode==='pokemon' && !(compareMode && compareA && compareB) && !!combinedResults.length && (
+            <div className="result-grid" style={{ marginTop:12 }}>
+              {combinedResults.map(p => {
+                const mon = p;
+                const t = [...new Set((p.types || []).map(normalizeType))];
+                return (
+                  <button
+                    key={`${p.id}-${p.name}`}
+                    onClick={()=>{
+                      if (compareMode) {
+                        if (!compareA || (compareA && compareB)) {
+                          setCompareA(p);
+                          setCompareB(null);
+                          setQuery('');
+                        } else if (compareA && !compareB) {
+                          if (!sameMon(compareA, p)) {
+                            setCompareB(p);
+                            setQuery('');
+                          }
+                        }
+                      } else {
+                        setSelected(p);
+                        setQuery('');
+                      }
+                    }}
+                    className={`result-tile${compareMode && compareA && sameMon(p, compareA) ? ' compare-selected' : ''}`}
+                      style={{ alignItems:'center', padding:10, borderRadius:12, border:'1px solid var(--divider)', background:'var(--surface)', gap:12 }}
+                  >
+                    <Sprite mon={mon} size={64} alt={p.name} />
+                    <div style={{ textAlign:'left', flex:1, minWidth:0 }}>
+                      <div style={{ fontWeight:800 }}>{titleCase(p.name)}</div>
+                      <div className="label-muted">Dex #{p.id}</div>
+                      <div style={{ display:'flex', gap:6, marginTop:6 }}>
+                        {t.map(tp => <TypePill key={tp} t={tp} compact />)}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {mode==='pokemon' && compareMode && (
+            <CompareView
+              left={compareA}
+              right={compareB}
+              onClearLeft={() => { setCompareA(compareB); setCompareB(null); setSelected(null); setQuery(''); }}
+              onClearRight={() => { setCompareB(null); setSelected(null); setQuery(''); }}
+              onReplaceLeftFromTeam={(picked) => {
+                if (!picked) return;
+                if (!compareA || normalizeKey(compareA.name) !== normalizeKey(picked.name)) {
+                  setCompareA(picked);
+                }
+              }}
+              onReplaceRightFromTeam={(picked) => {
+                if (!picked) return;
+                if (!compareB || normalizeKey(compareB.name) !== normalizeKey(picked.name)) {
+                  setCompareB(picked);
+                }
+              }}
+            />
+          )}
+
+          {/* Area results */}
+          {mode==='areas' && !!areaHits.length && (
+            <div style={{ marginTop:12, display:'grid', gap:12 }}>
+              {areaHits.map(hit => (
+                <div key={`${hit.region}-${hit.map}`} style={styles.areaCard}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+                    <div style={{ fontWeight:800, fontSize:16 }}>
+                      {hit.map} <span className="label-muted">({hit.region})</span>
+                    </div>
+                    <div className="label-muted">{hit.count} Pokemon</div>
+                  </div>
+
+                  <div style={{ ...styles.gridCols, marginTop:10 }}>
+                    {hit.entries.map((g, idx) => {
+                      const mon = getMon(g.monName);
+                      const isCaught = mon ? caught.has(mon.id) : false;
+                      return (
+                        <AreaMonCard
+                          key={idx}
+                          mon={mon}
+                          monName={g.monName}
+                          encounters={g.encounters}
+                          onView={(m) => {
+                            setSelected(m);
+                            setMode('pokemon');
+                          }}
+                          caught={isCaught}
+                          showCaught={showCaught}
+                          showEv={showEvYield}
+                          showCatchRate={showCatchRate}
+                          showCatchPercent={showCatchPercent}
+                          showHeldItem={showHeldItem}
+                          showLevel={showLevel}
+                          onToggleCaught={() => mon && toggleCaught(mon.id)}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          
+          {/* TM results */}
+          {mode==='tm' && !!tmHits.length && (
+            <div style={{ marginTop:12, display:'grid', gap:12 }}>
+              {tmHits.map((hit, idx) => (
+                <div key={`${hit.region}-${hit.tm}-${idx}`} style={styles.areaCard}>
+                  <div style={{ fontWeight:800, fontSize:16 }}>
+                    {hit.tm} <span className="label-muted">({hit.region})</span>
+                  </div>
+                  <div style={{ marginTop:6 }}>{hit.location}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Item results */}
+          {mode==='items' && !!itemHits.length && (
+            <div style={{ marginTop:12, display:'grid', gap:12 }}>
+              {itemHits.map(item => (
+                <div key={item.id} style={styles.areaCard}>
+                  <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+                    <img
+                      src={`${ITEM_ICON_BASE}${item.id}.png`}
+                      alt={item.name}
+                      style={{ width:36, height:36, imageRendering:'pixelated' }}
+                      onError={e => {
+                        e.currentTarget.onerror = null;
+                        e.currentTarget.src = ITEM_PLACEHOLDER;
+                        e.currentTarget.style.imageRendering = 'auto';
+                      }}
+                    />
+                    <div>
+                      <div style={{ fontWeight:800 }}>{item.name}</div>
+                      <div style={{ whiteSpace:'pre-line' }}>{item.description}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {/* Market results */}
+          {mode==='market' && (
+            <div style={{ marginTop:12 }}>
+              {marketLoading && (
+                <div className="label-muted">Loading market data…</div>
+              )}
+              {marketError && (
+                <div className="label-error">{marketError}</div>
+              )}
+              {!marketLoading && !marketError && (
+                <div style={{ display:'grid', gap:12 }}>
+                  {marketResults.map((item, idx) => (
+                    <div
+                      key={item.id ?? idx}
+                      style={{ ...styles.areaCard, cursor:'pointer' }}
+                      onClick={() => openMarketItem(item)}
+                    >
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+                          <img
+                            src={`${ITEM_ICON_BASE}${item.id}.png`}
+                            alt={item.name}
+                            style={{ width:36, height:36, imageRendering:'pixelated' }}
+                            onError={e => {
+                              e.currentTarget.onerror = null;
+                              e.currentTarget.src = ITEM_PLACEHOLDER;
+                              e.currentTarget.style.imageRendering = 'auto';
+                            }}
+                          />
+                          <div style={{ fontWeight:800 }}>
+                            {item.name}
+                          </div>
+                        </div>
+                        {item.price != null ? (
+                          <div>₽ {Number(item.price).toLocaleString()}</div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                  {!marketResults.length && (
+                    <div className="label-muted">No market data.</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Detail Panel (Pokemon) */}
+          {mode==='pokemon' && resolved && !(compareMode && (compareA || compareB)) && (
+             <>
+            <div ref={detailRef} className="grid">
+            {/* Left: Pokemon card */}
+            {(() => {
+              const evMap = {
+                ev_hp: 'HP',
+                ev_attack: 'Atk',
+                ev_defense: 'Def',
+                ev_sp_attack: 'Sp. Atk',
+                ev_sp_defense: 'Sp. Def',
+                ev_speed: 'Spd'
+              };
+              const yields = resolved.yields || {};
+              const evParts = Object.entries(evMap)
+                .filter(([key]) => (yields[key] || 0) > 0)
+                .map(([key, label]) => `${yields[key]} ${label}`);
+              const evText = evParts.length ? evParts.join(', ') : 'None';
+              const rawHeldItems = resolved.heldItems || [];
+              const heldItems = [];
+              const seenHeld = new Set();
+              for (const h of rawHeldItems) {
+                if (!h) continue;
+                const normName = normalizeKey(typeof h === 'string' ? h : h.name || '');
+                const dedupeKey = h.id != null ? `id-${h.id}` : `name-${normName}`;
+                if (seenHeld.has(dedupeKey)) continue;
+                seenHeld.add(dedupeKey);
+                heldItems.push(h);
+              }
+              // Deduplicate abilities while preserving order and keeping blanks for empty slots
+              const rawAbilities = (resolved.abilities || []).map(a => a?.name).filter(Boolean);
+              const abilityNames = [];
+              const seenAbilities = new Set();
+              for (let i = 0; i < 3; i++) {
+                const abilityName = rawAbilities[i];
+                if (abilityName && !seenAbilities.has(abilityName)) {
+                  abilityNames.push(abilityName);
+                  seenAbilities.add(abilityName);
+                } else if (abilityName && seenAbilities.has(abilityName)) {
+                  abilityNames.push(undefined); // Keep slot but make it blank
+                } else {
+                  abilityNames.push(undefined);
+                }
+              }
+              const useCompactAbilities = abilityNames.filter(Boolean).some(a => (a || '').length > 12) || abilityNames.filter(Boolean).join('').length > 28;
+              const renderHeldItem = (h, idx) => {
+                const item = ITEM_INDEX.byId.get(h.id) || ITEM_INDEX.byName.get(normalizeKey(h.name || h));
+                return (
+                  <span key={h.id || h.name || idx} className="profile-held-item">
+                    <img
+                      src={h.id ? `${ITEM_ICON_BASE}${h.id}.png` : ITEM_PLACEHOLDER}
+                      alt={h.name || h}
+                      onError={(e) => {
+                        e.currentTarget.onerror = null;
+                        e.currentTarget.src = ITEM_PLACEHOLDER;
+                        e.currentTarget.style.imageRendering = 'auto';
+                      }}
+                    />
+                    <DelayedTooltip content={item?.description || ''}>
+                      <span className="profile-held-name">{h.name || h}</span>
+                    </DelayedTooltip>
+                  </span>
+                );
+              };
+
+              return (
+                <div style={{ ...styles.card, position:'relative', padding:0, overflow:'hidden' }} className="pokemon-profile-card">
+                  <button
+                    type="button"
+                    className="profile-close-button"
+                    onClick={() => { setSelected(null); setQuery(''); }}
+                    title="Close profile"
+                    aria-label="Close profile"
+                  >
+                    ×
+                  </button>
+                  <div className="profile-hero">
+                    <div className="profile-hero-top">
+                      <div className="profile-hero-actions-left">
+                        <button
+                          type="button"
+                          className={`profile-compare-btn${compareMode ? ' is-active' : ''}`}
+                          aria-pressed={compareMode}
+                          onClick={() => {
+                            setCompareMode(true);
+                            setCompareA(resolved);
+                            setCompareB(null);
+                            setSelected(null);
+                            setQuery('');
+                          }}
+                          title="Compare"
+                        >
+                          Compare
+                        </button>
+                      </div>
+                      <div className="profile-hero-actions-right">
+                        {ALPHA_ID_SET.has(resolved.id) && (
+                          <button
+                            type="button"
+                            className="profile-icon-button"
+                            onClick={() => toggleAlphaCaught(resolved.id)}
+                            title={alphaCaught.has(resolved.id) ? 'Mark Alpha as uncaught' : 'Mark Alpha as caught'}
+                          >
+                            <img src={alphaIconUrl} alt="Alpha Caught" style={{ width:20, height:20, opacity: alphaCaught.has(resolved.id) ? 1 : 0.35 }} />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="profile-icon-button"
+                          onClick={() => toggleCaught(resolved.id)}
+                          title={caught.has(resolved.id) ? 'Mark as uncaught' : 'Mark as caught'}
+                        >
+                          <PokeballIcon filled={caught.has(resolved.id)} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="profile-hero-main">
+                      <div className="profile-sprite-wrap">
+                        <Sprite mon={selected} size={140} alt={resolved.name} forceShiny={profileShiny} playOnHover />
+                        <button
+                          type="button"
+                          className={`profile-shiny-toggle${profileShiny || shinyGlobal ? ' is-active' : ''}`}
+                          onClick={() => setProfileShiny(v => !v)}
+                          title="Toggle shiny sprite"
+                        >
+                          <svg width="18" height="18" viewBox="0 0 24 24" role="img" aria-label="Shiny">
+                            <polygon
+                              points="12,2 14.9,8.1 22,9 16.8,13.4 18.3,20.4 12,16.9 5.7,20.4 7.2,13.4 2,9 9.1,8.1"
+                              fill={profileShiny || shinyGlobal ? '#d4af37' : '#ffffff'}
+                              stroke={profileShiny || shinyGlobal ? '#9b7d22' : '#888888'}
+                              strokeWidth="1.2"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                      <div className="profile-hero-info">
+                        <div className="profile-name-row">
+                          <span className="profile-name">{titleCase(resolved.name)}</span>
+                          <span className="profile-dex">#{String(resolved.id).padStart(3,'0')}</span>
+                        </div>
+                        <div className="profile-type-row">
+                          {(resolved.types || []).map((tp, idx) => (
+                            <TypePill
+                              key={`${tp}-${idx}`}
+                              t={tp}
+                              onClick={() => {
+                                setMode('pokemon');
+                                setSelected(null);
+                                setQuery('');
+                                setTypeFilter(normalizeType(tp));
+                                setTypeFilter2('');
+                              }}
+                            />
+                          ))}
+                          {!resolved.types?.length && <span className="label-muted">Unknown</span>}
+                        </div>
+                        <div className="profile-hero-meta-grid">
+                          <div className="profile-meta-item">
+                            <span className="profile-meta-label">Exp</span>
+                            <span className="profile-meta-value">{titleCase((resolved.expType || '').replace(/_/g, ' ')) || '—'}</span>
+                          </div>
+                          <div className="profile-meta-item">
+                            <span className="profile-meta-label">Egg Group</span>
+                            {(() => {
+                              const eggGroups = (resolved.eggGroups || []).filter(Boolean);
+                              const eggGroupText = eggGroups.map(titleCase).join(' / ');
+                              return (
+                                <span className={`profile-meta-value${eggGroupText ? '' : ' label-muted'}`}>
+                                  {eggGroupText || 'None'}
+                                </span>
+                              );
+                            })()}
+                          </div>
+                          <div className="profile-meta-item">
+                            <span className="profile-meta-label">Height</span>
+                            <span className="profile-meta-value">{formatHeight(resolved.height)}</span>
+                          </div>
+                          <div className="profile-meta-item">
+                            <span className="profile-meta-label">Weight</span>
+                            <span className="profile-meta-value">{formatWeight(resolved.weight)}</span>
+                          </div>
+                          <div className="profile-meta-item">
+                            <span className="profile-meta-label">Gender</span>
+                            <span className="profile-meta-value">{formatGenderRatio(resolved.genderRatio)}</span>
+                          </div>
+                          <div className="profile-meta-item">
+                            <span className="profile-meta-label">Obtainable</span>
+                            <span className="profile-meta-value">{resolved.obtainable ? 'Yes' : 'No'}</span>
+                          </div>
+                        </div>
+                        {resolved.forms?.length > 1 && (
+                          <div className="profile-forms-row">
+                            <span className="profile-forms-label">Forms</span>
+                            <div className="profile-forms-list">
+                              {resolved.forms.map(f => (
+                                <span key={f.form_id || f.id} className="profile-form-pill">{f.name}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="profile-body">
+                    <div className="profile-column-left">
+                      <div className="profile-section-card">
+                        <div className="profile-section-header">
+                          <span className="profile-section-title">Base Stats</span>
+                        </div>
+                        <StatsRow
+                          mon={resolved}
+                          override={singleOverride}
+                          underlineKeys={singleUnderline}
+                          build={singleBuild}
+                          onSetIV={singleSetters.onSetIV}
+                          onSetEV={singleSetters.onSetEV}
+                          onSetLevel={singleSetters.onSetLevel}
+                          natureEl={<NatureSelect natureList={natureList} value={singleBuild.nature} onChange={(v)=> setSingleBuild(prev=> ({...prev, nature:v}))} />}
+                        />
+                      </div>
+                      <div className="profile-section-card">
+                        <div className="profile-section-title">Type Matchups</div>
+                        {(() => {
+                          const blocks = [
+                            { title: '4x Weak', list: resolved.weakness.x4 || [] },
+                            { title: '2x Weak', list: resolved.weakness.x2 || [] },
+                            { title: '0.5x Resist', list: resolved.weakness.x0_5 || [] },
+                            { title: '0.25x Resist', list: resolved.weakness.x0_25 || [] },
+                            { title: '0x Immune', list: resolved.weakness.x0 || [] },
+                          ].filter(b => (b.list?.length || 0) > 0);
+                          if (!blocks.length) {
+                            return <div className="label-muted">No notable matchups.</div>;
+                          }
+                          const compact = blocks.length === 5;
+                          return (
+                            <div className={`profile-matchups-grid${compact ? ' is-compact' : ''}`}>
+                              {blocks.map((b, i) => (
+                                <div key={`${b.title}-${i}`} className="profile-matchup-card">
+                                  <span className="profile-matchup-title">{b.title}</span>
+                                  <div className="profile-matchup-types">
+                                    {b.list.map((t) => (
+                                      <TypePill key={`${b.title}-${t}`} t={t} compact={compact} />
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                      <div className="profile-section-card">
+                        <EvolutionChain mon={resolved} onSelect={(m)=>{ setSelected(m); setShowSmogonSets(false); setShowMoveset(false); }} showTitle={false} />
+                      </div>
+                    </div>
+                    <div className="profile-column-right">
+                      <div className="profile-section-card">
+                        <div className="profile-section-title">Abilities</div>
+                        <div className="profile-ability-list">
+                          {[0,1,2].map((i) => (
+                            <AbilityPill key={`ability-${i}`} label={i === 2 ? 'Hidden' : `${i + 1}`} name={abilityNames[i]} compact={useCompactAbilities} />
+                          ))}
+                          {!abilityNames.length && <span className="label-muted">None</span>}
+                        </div>
+                      </div>
+                      <div className="profile-section-card">
+                        <div className="profile-section-title">Held Items</div>
+                        <div className="profile-held-list">
+                          {heldItems.length ? heldItems.map(renderHeldItem) : (
+                            <span className="label-muted">None</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="profile-section-card">
+                        <div className="profile-section-title">Misc</div>
+                        <div className="profile-metric-grid">
+                          <div className="profile-metric-item profile-metric-item--ev">
+                            <span className="profile-metric-label">EV Yield</span>
+                            <span className="profile-metric-value">{evText}</span>
+                          </div>
+                          <div className="profile-metric-item profile-metric-item--catch-rate">
+                            <span className="profile-metric-label">Catch Rate</span>
+                            <span className="profile-metric-value">{resolved.catchRate ?? 'N/A'}</span>
+                          </div>
+                          <div className="profile-metric-item profile-metric-item--catch">
+                            <div className="profile-metric-catch-header">
+                              <span className="profile-metric-label">Catch %</span>
+                              <BallSelect value={selectedBallKey} onChange={setSelectedBallKey} />
+                            </div>
+                            <div className="profile-metric-catch-display">
+                              <span className="profile-metric-value profile-metric-value--catch">
+                                {catchPercent != null ? `${catchPercent.toFixed(1)}%` : 'N/A'}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="profile-metric-item profile-metric-item--status">
+                            <span className="profile-metric-label">Catch Mods</span>
+                            <div className="profile-status-grid">
+                              <button
+                                type="button"
+                                className={`profile-chip-button${isOneHp ? ' is-active danger' : ''}`}
+                                onClick={() => setIsOneHp(v => !v)}
+                              >
+                                1 HP
+                              </button>
+                              {STATUS_EFFECT_BUTTONS.map(({ key, label }) => (
+                                <button
+                                  key={key}
+                                  type="button"
+                                  className={`profile-chip-button${statusEffect === key ? ' is-active' : ''}`}
+                                  onClick={() => toggleStatusEffect(key)}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+            {/* Right: Locations */}
+            <div style={{ ...styles.card, marginTop:16 }}>
+             <div
+                className="label-muted"
+                style={{ fontWeight:700, cursor:'pointer', marginBottom: showLocations ? 6 : 0 }}
+                onClick={() => setShowLocations(v => !v)}
+              >
+                {showLocations ? '▾' : '▸'} Locations
+              </div>
+              {showLocations && (
+                <>
+                  {byRegion.length === 0 && (<div className="label-muted">No wild locations found.</div>)}
+                  {byRegion.map(([reg, list]) => (
+                    <div key={reg} style={{ marginBottom:12 }}>
+                      <div style={{ fontWeight:800, marginBottom:6 }}>{reg}</div>
+                      <div style={{ display:'grid', gap:8 }}>
+                        {list.map((loc, i) => (
+                          <div
+                            key={i}
+                            style={{ border:'1px solid var(--divider)', borderRadius:10, padding:'8px 10px', background:'var(--surface)', cursor:'pointer' }}
+                              onClick={() => {
+                                setMode('areas');
+                                setAreaRegion(reg);
+                                // Remove any parenthetical notes from the location name
+                                setAreaQuery(loc.map.replace(/\s*\([^)]*\)/g, '').trim());
+                                setShowLocations(false);
+                                window.scrollTo({ top: 0, behavior: 'smooth' });
+                              }}
+                            >
+                            <div style={{ fontWeight:700 }}>{loc.map}</div>
+                            {(loc.min || loc.max) && (
+                              <div className="label-muted" style={{ marginTop:4 }}>
+                                {loc.min && loc.max ? `Lv ${loc.min}-${loc.max}` : `Lv ${loc.min || loc.max}`}
+                              </div>
+                            )}
+                            <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginTop:4 }}>
+                              {(Array.isArray(loc.method) ? loc.method : [loc.method])
+                                .filter(Boolean)
+                                .map((m, j) => <MethodPill key={`m-${i}-${j}-${m}`} method={m} />)}
+                              {!(Array.isArray(loc.method) ? loc.method : [loc.method])
+                                .some(m => /lure/i.test(m || '')) &&
+                                (Array.isArray(loc.rarity) ? loc.rarity : [loc.rarity])
+                                  .filter(Boolean)
+                                  .map((r, j) => <RarityPill key={`r-${i}-${j}-${r}`} rarity={r} hordeSize={loc.hordeSize} />)}
+                            </div>
+                          </div>
+                        ))}
+                  </div>
+                </div>
+                  ))}
+                </>
+              )}
+        </div>
+          </div>
+
+          <div style={{ ...styles.card, marginTop:16 }}>
+            <RecommendedMovesets
+              speciesName={resolved?.name}
+              expanded={showSmogonSets}
+              onToggle={() => setShowSmogonSets(v => !v)}
+            />
+          </div>
+          {MOVE_METHODS.some(m => (resolved.moves?.[m.key] || []).length) && (
+            <div style={{ ...styles.card, marginTop:16 }}>
+              <div
+                className="label-muted"
+                style={{ fontWeight:700, cursor:'pointer', marginBottom: showMoveset ? 6 : 0 }}
+                onClick={() => setShowMoveset(v => !v)}
+              >
+                {showMoveset ? '▾' : '▸'} Moves
+              </div>
+              {showMoveset && (
+                <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                  {MOVE_METHODS.map(m => (
+                    <MovesTable
+                      key={m.key}
+                      title={m.label}
+                      moves={resolved.moves[m.key] || []}
+                      showLevel={m.key === 'lv'}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          </>
+        )}
+      </div>
+      )}
+      
+      {showTypeChart && (
+        <div
+          onClick={() => {
+            setShowTypeChart(false);
+            setMode('pokemon');
+          }}
+          style={{
+            position:'fixed',
+            top:0,
+            left:0,
+            width:'100%',
+            height:'100%',
+            background:'rgba(0,0,0,0.75)',
+            display:'flex',
+            alignItems:'center',
+            justifyContent:'center',
+            zIndex:1100
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ maxWidth:'85vw', maxHeight:'85vh', padding:8 }}
+          >
+            <img
+              src={typeChartImg}
+              alt="Pokemon type chart"
+              style={{
+                maxWidth:'85vw',
+                maxHeight:'85vh',
+                width:'auto',
+                height:'auto',
+                display:'block',
+                borderRadius:12,
+                boxShadow:'0 12px 32px rgba(0,0,0,0.6)',
+                objectFit:'contain'
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {showResources && (
+        <ResourcesOverlay onClose={() => setShowResources(false)} />
+      )}
+
+      {marketSelected && (
+        <div
+          onClick={() => setMarketSelected(null)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: '80%',
+              height: '80%',
+              background: 'var(--surface)',
+              border: '1px solid var(--divider)',
+              borderRadius: 8,
+              display: 'flex',
+              flexDirection: 'column'
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '8px 10px',
+                borderBottom: '1px solid var(--divider)'
+              }}
+            >
+              <div style={{ fontWeight: 800 }}>{marketSelected.name}</div>
+              <button
+                onClick={() => setMarketSelected(null)}
+                style={{ cursor: 'pointer' }}
+              >
+                X
+              </button>
+            </div>
+            <webview
+              src={`https://pokemmohub.com/items/${normalizeKey(marketSelected.name)}`}
+              style={{ flex: 1 }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Fixed controls */}
+      <div
+        style={{
+          position:'fixed',
+          left:12,
+          bottom:10,
+          display:'flex',
+          gap:8,
+          zIndex:10000
+        }}
+      >
+        <ThemeButton theme={theme} setTheme={setTheme} />
+      </div>
+      <VersionBadge />
+    </>
+    </ColorContext.Provider>
+    </ShinyCaughtContext.Provider>
+    </AlphaCaughtContext.Provider>
+    </CaughtContext.Provider>
+  );
+}
+
+export default App;

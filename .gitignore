@@ -1,0 +1,29 @@
+﻿# Node/Electron
+node_modules/
+npm-debug.log*
+yarn-error.log*
+*.log
+.DS_Store
+
+# Build / packaging output
+dist/
+out/
+build/
+win-unpacked/
+
+# Generated release artifacts
+release/*
+!release/builder-effective-config.yaml
+
+# Telemetry secrets injected during CI/CD
+resources/telemetry.config.json
+
+*.exe
+*.msi
+*.zip
+*.asar
+
+# Dev scratch files (ignore in repo)
+temp_*.txt
+tmp_*.txt
+patchnotes.txt
