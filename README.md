@@ -26,7 +26,7 @@ It is a fork of https://github.com/muphy09/3s-PokeMMO-Tool by Brian K. (muphy09)
 2. Clone the repo:
    - `git clone https://github.com/elgreams/3and3s-pokemmo-pocket-dex.git`
    - `cd 3and3s-pokemmo-pocket-dex`
-   - **Create the file** `android/local.properties` with the contents `sdk.dir=/path/to/android/sdk`
+   - Create the file `android/local.properties` with the contents `sdk.dir=/path/to/android/sdk`
 3. Install dependencies:
    - `npm ci`
 4. Build + sync Capacitor:
