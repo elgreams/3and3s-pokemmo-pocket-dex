@@ -35,6 +35,7 @@ It is a fork of https://github.com/muphy09/3s-PokeMMO-Tool by Brian K. (muphy09)
    - `android/app/build/outputs/apk/debug/app-debug.apk`
 
 ## ⚠️ Android known gaps
+- Currently the "Market" section of the app is not able to show price history. This may be changed in the near future.
 - Live OCR / live tracking features are removed.
 - Desktop auto-updates, window capture, global shortcuts, and system tray integrations are not supported.
   (Desktop builds are no longer maintained in this fork.)
