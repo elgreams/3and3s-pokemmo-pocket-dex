@@ -5519,9 +5519,10 @@ const marketResults = React.useMemo(() => {
                 X
               </button>
             </div>
-            <webview
+            <iframe
               src={`https://pokemmohub.com/items/${normalizeKey(marketSelected.name)}`}
-              style={{ flex: 1 }}
+              style={{ flex: 1, width: '100%', height: '100%' }}
+              title={`${marketSelected.name} market history`}
             />
           </div>
         </div>
