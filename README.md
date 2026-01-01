@@ -12,7 +12,7 @@ It is a fork of https://github.com/muphy09/3s-PokeMMO-Tool by Brian K. (muphy09)
 - 🧭 **Deep Filtering Search** – Filter Pokémon by type, egg group, abilities, moves, region, and held items. Search Locations, Areas, Hordes, TMs & more!
 - 🕹️ **Caught List & Encounter Methods** – Mark Pokémon you've caught inside a Caught List and filter encounter methods for easier hunting! (Lure, Cave, Horde, Grass, etc)
 - 🎨 **Custom Color Schemes** – Choose your own colors for rarity and encounter methods.
-- 🛒 **GTL Market Viewer and Price History** – Utalize PokeMMOHub.com to view current and past market prices form the GTL.
+- 🛒 **GTL Market Viewer and Price History** – Utalize PokeMMOHub.com to view current and past market prices from the GTL.
 - 🪄 **Team Builder** – Quickly assemble & save your team to view weak areas - Save important teams for reference.
 - 🌍 **Horde Search** – Detailed Horde Search page brings Horde locations for every region. Filter by EV yield, encounter method, horde size, 
 - ⚙️ **UI Scaling** – Adjust the app's interface scale from the Options menu.
