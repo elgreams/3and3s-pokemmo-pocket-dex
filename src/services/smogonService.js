@@ -69,6 +69,7 @@ function buildItemIndex(rawItems) {
     if (!item?.name) continue;
     map.set(normalizeName(item.name), {
       id: item.id,
+      imageId: item.imageId ?? null,
       name: item.name,
       description: sanitizeText(item.description || '')
     });
@@ -300,7 +301,7 @@ function buildChoiceList(values, lookup, kind) {
     }
     const extra = {};
     if (kind === 'item') {
-      extra.itemId = entry?.id ?? null;
+      extra.itemId = entry?.imageId ?? entry?.id ?? null;
     }
     results.push({ label, tooltip, ...extra });
   }

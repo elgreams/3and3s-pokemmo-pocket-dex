@@ -40,8 +40,12 @@ const SPRITES_BASE = (import.meta.env.VITE_SPRITES_BASE || `${import.meta.env.BA
 const SPRITES_EXT  = import.meta.env.VITE_SPRITES_EXT || '.png';
 
 // Item assets (reuse same source as Items tab)
-const ITEM_ICON_BASE = 'https://raw.githubusercontent.com/PokeMMO-Tools/pokemmo-data/main/assets/itemicons/';
+const ITEM_ICON_BASE = 'https://pokemmohub.com/item/';
 const ITEM_PLACEHOLDER = `${import.meta.env.BASE_URL}no-item.svg`;
+
+const getItemImageUrl = (imageId) =>
+  imageId != null ? `${ITEM_ICON_BASE}${imageId}.png` : ITEM_PLACEHOLDER;
+
 
 function normalizeKey(s=''){
   return String(s)
@@ -424,7 +428,9 @@ export default function TeamBuilder({ onViewMon }) {
                 : null;
               const itemName = heldItems[idx] || '';
               const itemObj = ITEM_INDEX.byName.get(normalizeKey(itemName));
-              const itemIcon = itemObj?.id != null ? `${ITEM_ICON_BASE}${itemObj.id}.png` : (itemName ? ITEM_PLACEHOLDER : null);
+               const itemIcon = itemObj?.imageId != null
+                ? getItemImageUrl(itemObj.imageId)
+                : (itemName ? ITEM_PLACEHOLDER : null);
               return (
                 <div key={idx} style={{
                   width:'100%',

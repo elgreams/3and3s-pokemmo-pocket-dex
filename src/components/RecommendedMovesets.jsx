@@ -22,8 +22,12 @@ const TYPE_COLORS = {
   fairy: '#D685AD'
 };
 
-const ITEM_ICON_BASE = 'https://raw.githubusercontent.com/PokeMMO-Tools/pokemmo-data/main/assets/itemicons/';
+const ITEM_ICON_BASE = 'https://pokemmohub.com/item/';
 const ITEM_PLACEHOLDER = `${import.meta.env.BASE_URL}no-item.svg`;
+
+const getItemImageUrl = (imageId) =>
+  imageId != null ? `${ITEM_ICON_BASE}${imageId}.png` : ITEM_PLACEHOLDER;
+
 
 function LabelText({ children }) {
   return (
@@ -182,7 +186,7 @@ function HoverableText({ option }) {
     >
       {hasItemIcon && (
         <img
-          src={`${ITEM_ICON_BASE}${option.itemId}.png`}
+          src={getItemImageUrl(option.itemId)}
           alt={option.label}
           width={20}
           height={20}

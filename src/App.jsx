@@ -40,9 +40,13 @@ const APP_TITLE = "3&3s Pocket Dex";
  */
 const SPRITES_BASE = (import.meta.env.VITE_SPRITES_BASE || `${import.meta.env.BASE_URL}sprites/`).replace(/\/+$/, '/');
 const SPRITES_EXT  = import.meta.env.VITE_SPRITES_EXT || '.png';
-const ITEM_ICON_BASE = 'https://raw.githubusercontent.com/PokeMMO-Tools/pokemmo-data/main/assets/itemicons/';
+const ITEM_ICON_BASE = 'https://pokemmohub.com/item/';
 const ITEM_PLACEHOLDER = `${import.meta.env.BASE_URL}no-item.svg`;
 const PLACEHOLDER_POKEMON = `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M50 10c-5.5 0-10 4.5-10 10v5h-5c-5.5 0-10 4.5-10 10v30c0 5.5 4.5 10 10 10h5v5c0 5.5 4.5 10 10 10s10-4.5 10-10v-5h5c5.5 0 10-4.5 10-10V35c0-5.5-4.5-10-10-10h-5v-5c0-5.5-4.5-10-10-10z" fill="none" stroke="currentColor" stroke-width="2"/><text x="50" y="55" font-size="40" text-anchor="middle" fill="currentColor">?</text></svg>`)}`;
+
+const getItemImageUrl = (imageId) =>
+  imageId != null ? `${ITEM_ICON_BASE}${imageId}.png` : ITEM_PLACEHOLDER;
+
 
 // Precompute horde sizes by region and area for quick lookup
 const HORDE_SIZE_MAP = (() => {
@@ -567,6 +571,17 @@ const ITEM_INDEX = (() => {
   }
   return { byId, byName };
 })();
+
+const resolveItemImageId = (item) => {
+  if (!item) return null;
+  if (item.imageId != null) return item.imageId;
+  if (item.id != null) return ITEM_INDEX.byId.get(item.id)?.imageId ?? null;
+  return null;
+};
+
+const resolveImageIdByItemId = (itemId) =>
+  ITEM_INDEX.byId.get(itemId)?.imageId ?? null;
+
 
 const MOVES_INDEX = (() => {
   const byId = new Map();
@@ -2705,7 +2720,7 @@ function EvolutionChain({ mon, onSelect }) {
                   <div style={{ textAlign:'center', fontSize:12, display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
                     {itemId != null && (
                       <img
-                        src={`${ITEM_ICON_BASE}${itemId}.png`}
+                        src={getItemImageUrl(resolveImageIdByItemId(itemId))}
                         alt={String(val || 'Item')}
                         style={{ width:22, height:22, imageRendering:'pixelated' }}
                         onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = ITEM_PLACEHOLDER; e.currentTarget.style.imageRendering = 'auto'; }}
@@ -4933,7 +4948,7 @@ const marketResults = React.useMemo(() => {
                 <div key={item.id} style={styles.areaCard}>
                   <div style={{ display:'flex', gap:10, alignItems:'center' }}>
                     <img
-                      src={`${ITEM_ICON_BASE}${item.id}.png`}
+                      src={getItemImageUrl(resolveItemImageId(item))}
                       alt={item.name}
                       style={{ width:36, height:36, imageRendering:'pixelated' }}
                       onError={e => {
@@ -4971,7 +4986,7 @@ const marketResults = React.useMemo(() => {
                       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                         <div style={{ display:'flex', gap:10, alignItems:'center' }}>
                           <img
-                            src={`${ITEM_ICON_BASE}${item.id}.png`}
+                            src={getItemImageUrl(resolveItemImageId(item))}
                             alt={item.name}
                             style={{ width:36, height:36, imageRendering:'pixelated' }}
                             onError={e => {
@@ -5050,7 +5065,7 @@ const marketResults = React.useMemo(() => {
                 return (
                   <span key={h.id || h.name || idx} className="profile-held-item">
                     <img
-                      src={h.id ? `${ITEM_ICON_BASE}${h.id}.png` : ITEM_PLACEHOLDER}
+                      src={getItemImageUrl(resolveImageIdByItemId(h.id))}
                       alt={h.name || h}
                       onError={(e) => {
                         e.currentTarget.onerror = null;
@@ -5504,10 +5519,9 @@ const marketResults = React.useMemo(() => {
                 X
               </button>
             </div>
-            <iframe
+            <webview
               src={`https://pokemmohub.com/items/${normalizeKey(marketSelected.name)}`}
-              style={{ flex: 1, width: '100%', height: '100%' }}
-              title={`${marketSelected.name} market history`}
+              style={{ flex: 1 }}
             />
           </div>
         </div>
