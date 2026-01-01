@@ -1,4 +1,4 @@
-# 3&3s Pocket Dex
+# 3&3s Pocket Dex v3.3.8c
 
 A PokeMMO Companion Tool.
 
