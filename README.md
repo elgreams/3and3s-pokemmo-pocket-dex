@@ -1,5 +1,4 @@
-# 3&3s Pocket Dex v3.3.8c
-
+# 3&3s Pocket Dex
 A PokeMMO Companion Tool.
 
 3&3s Pocket Dex is an **Android-first companion app** for **PokéMMO** that focuses on encounter data and a full Pokédex.
