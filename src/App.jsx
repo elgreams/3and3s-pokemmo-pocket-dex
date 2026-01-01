@@ -5450,20 +5450,22 @@ const marketResults = React.useMemo(() => {
         >
           <div
             onClick={e => e.stopPropagation()}
-            style={{ maxWidth:'85vw', maxHeight:'85vh', padding:8 }}
+            style={{ maxWidth:'90vw', maxHeight:'90vh', padding:0 }}
           >
             <img
               src={typeChartImg}
               alt="Pokemon type chart"
               style={{
-                maxWidth:'85vw',
-                maxHeight:'85vh',
-                width:'auto',
-                height:'auto',
+                maxWidth:'none',
+                maxHeight:'none',
+                width:'90vw',
+                height:'90vh',
                 display:'block',
                 borderRadius:12,
                 boxShadow:'0 12px 32px rgba(0,0,0,0.6)',
-                objectFit:'contain'
+                objectFit:'contain',
+                transform:'scale(1.8)',
+                transformOrigin:'center'
               }}
             />
           </div>
